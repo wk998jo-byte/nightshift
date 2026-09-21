@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import { prisma } from '@/lib/db';
-import { SESSION_COOKIE, writeAudit } from '@/lib/auth';
+import { SESSION_COOKIE, sessionCookieOptions, writeAudit } from '@/lib/auth';
 import { signSession } from '@/lib/security';
 
 export async function POST(req: NextRequest) {
@@ -61,10 +61,7 @@ export async function POST(req: NextRequest) {
   });
 
   res.cookies.set(SESSION_COOKIE, token, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
-    path: '/',
+    ...sessionCookieOptions(req),
     maxAge: 60 * 60 * 24 * 30,
   });
 
