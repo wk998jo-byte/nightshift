@@ -48,3 +48,16 @@ export function choiceForAssignment(
 export function canManageSchedule(role: string): boolean {
   return role === 'ADMIN' || role === 'HR' || role === 'SUPERVISOR';
 }
+
+/** Prisma filter: Shift Schedule lists only active real EMPLOYEE accounts. */
+export const SHIFT_SCHEDULE_EMPLOYEE_WHERE = {
+  isActive: true,
+  user: { role: 'EMPLOYEE' as const, isActive: true },
+};
+
+export function isShiftScheduleEmployee(row: {
+  isActive: boolean;
+  user: { role: string; isActive: boolean } | null;
+}): boolean {
+  return row.isActive && row.user?.role === 'EMPLOYEE' && row.user.isActive;
+}

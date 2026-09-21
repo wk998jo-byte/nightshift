@@ -9,7 +9,7 @@ import {
   type AssignmentWithShift,
 } from './schedule-lookup';
 import { countAbsent, saveScheduleItems, weekDates, weekStart, type ScheduleDb } from './schedule-service';
-import { canManageSchedule, catalogFromShifts, classifyShift } from './shift-catalog';
+import { canManageSchedule, catalogFromShifts, classifyShift, isShiftScheduleEmployee } from './shift-catalog';
 
 process.env.TZ = 'UTC';
 process.env.APP_TIMEZONE = 'Asia/Riyadh';
@@ -370,6 +370,37 @@ describe('schedule authorization', () => {
     assert.equal(canManageSchedule('SUPERVISOR'), true);
     assert.equal(canManageSchedule('SECURITY'), false);
     assert.equal(canManageSchedule('EMPLOYEE'), false);
+  });
+
+  it('Shift Schedule lists only active real EMPLOYEE accounts', () => {
+    assert.equal(
+      isShiftScheduleEmployee({
+        isActive: true,
+        user: { role: 'EMPLOYEE', isActive: true },
+      }),
+      true
+    );
+    assert.equal(
+      isShiftScheduleEmployee({
+        isActive: false,
+        user: { role: 'EMPLOYEE', isActive: true },
+      }),
+      false
+    );
+    assert.equal(
+      isShiftScheduleEmployee({
+        isActive: true,
+        user: { role: 'EMPLOYEE', isActive: false },
+      }),
+      false
+    );
+    assert.equal(
+      isShiftScheduleEmployee({
+        isActive: true,
+        user: { role: 'SUPERVISOR', isActive: true },
+      }),
+      false
+    );
   });
 });
 

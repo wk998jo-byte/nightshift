@@ -113,6 +113,15 @@ export function assertSafeAdminPassword(password: string): void {
   }
 }
 
+export function assertSafeEmployeePassword(password: string, name: string): void {
+  if (password.length < 4) {
+    throw new BootstrapError(`${name} must be at least 4 characters.`);
+  }
+  if (DEMO_PASSWORDS.has(password)) {
+    throw new BootstrapError(`${name} cannot be a development demo password.`);
+  }
+}
+
 function sameCoord(a: number, b: number): boolean {
   return Math.abs(a - b) < 1e-6;
 }
@@ -158,6 +167,17 @@ type BootstrapInput = {
   legacyShift?: LegacyShiftSpec;
   terminalName: string;
   terminalSlug: string;
+  employees: [ProductionEmployeeSpec, ProductionEmployeeSpec, ProductionEmployeeSpec];
+};
+
+export type ProductionEmployeeSpec = {
+  index: 1 | 2 | 3;
+  fullName: string;
+  employeeCode: string;
+  badgeNumber: string;
+  username: string;
+  password: string;
+  position: string;
 };
 
 export type AdminDb = {
@@ -272,6 +292,46 @@ function readShiftSpec(env: EnvMap, index: 1 | 2): ShiftSpec {
   };
 }
 
+function readEmployeeSpec(env: EnvMap, index: 1 | 2 | 3): ProductionEmployeeSpec {
+  const prefix = `PROD_EMPLOYEE_${index}`;
+  const password = requireEnv(`${prefix}_PASSWORD`, env);
+  assertSafeEmployeePassword(password, `${prefix}_PASSWORD`);
+  return {
+    index,
+    fullName: requireEnv(`${prefix}_FULL_NAME`, env),
+    employeeCode: requireEnv(`${prefix}_CODE`, env),
+    badgeNumber: requireEnv(`${prefix}_BADGE`, env),
+    username: requireEnv(`${prefix}_USERNAME`, env),
+    password,
+    position: requireEnv(`${prefix}_POSITION`, env),
+  };
+}
+
+function assertDistinctStaffIdentifiers(
+  admin: { username: string; employeeCode: string; badgeNumber: string },
+  employees: ProductionEmployeeSpec[]
+): void {
+  const claimed = new Map<string, string>();
+  const claim = (kind: string, value: string, owner: string) => {
+    const key = `${kind}:${value}`;
+    const previous = claimed.get(key);
+    if (previous) {
+      throw new BootstrapError(`Conflict: ${owner} ${kind} ${value} is already used by ${previous}.`);
+    }
+    claimed.set(key, owner);
+  };
+
+  claim('username', admin.username, 'PROD_ADMIN');
+  claim('employeeCode', admin.employeeCode, 'PROD_ADMIN');
+  claim('badgeNumber', admin.badgeNumber, 'PROD_ADMIN');
+  for (const employee of employees) {
+    const owner = `PROD_EMPLOYEE_${employee.index}`;
+    claim('username', employee.username, owner);
+    claim('employeeCode', employee.employeeCode, owner);
+    claim('badgeNumber', employee.badgeNumber, owner);
+  }
+}
+
 export function readBootstrapInput(env: EnvMap = process.env): BootstrapInput {
   const adminPassword = requireEnv('PROD_ADMIN_PASSWORD', env);
   assertSafeAdminPassword(adminPassword);
@@ -280,13 +340,25 @@ export function readBootstrapInput(env: EnvMap = process.env): BootstrapInput {
   if (shift1.name === shift2.name) {
     throw new BootstrapError('PROD_SHIFT_1_NAME and PROD_SHIFT_2_NAME must be different.');
   }
+  const employees: [ProductionEmployeeSpec, ProductionEmployeeSpec, ProductionEmployeeSpec] = [
+    readEmployeeSpec(env, 1),
+    readEmployeeSpec(env, 2),
+    readEmployeeSpec(env, 3),
+  ];
+  const adminUsername = requireEnv('PROD_ADMIN_USERNAME', env);
+  const adminEmployeeCode = requireEnv('PROD_ADMIN_EMPLOYEE_CODE', env);
+  const adminBadgeNumber = requireEnv('PROD_ADMIN_BADGE_NUMBER', env);
+  assertDistinctStaffIdentifiers(
+    { username: adminUsername, employeeCode: adminEmployeeCode, badgeNumber: adminBadgeNumber },
+    employees
+  );
 
   return {
-    adminUsername: requireEnv('PROD_ADMIN_USERNAME', env),
+    adminUsername,
     adminPassword,
     adminFullName: requireEnv('PROD_ADMIN_FULL_NAME', env),
-    adminEmployeeCode: requireEnv('PROD_ADMIN_EMPLOYEE_CODE', env),
-    adminBadgeNumber: requireEnv('PROD_ADMIN_BADGE_NUMBER', env),
+    adminEmployeeCode,
+    adminBadgeNumber,
     projectName: requireEnv('PROD_PROJECT_NAME', env),
     projectCode: requireEnv('PROD_PROJECT_CODE', env),
     projectLocationLabel: requireEnv('PROD_PROJECT_LOCATION_LABEL', env),
@@ -297,6 +369,7 @@ export function readBootstrapInput(env: EnvMap = process.env): BootstrapInput {
     legacyShift: readLegacyShiftSpec(env),
     terminalName: requireEnv('PROD_TERMINAL_NAME', env),
     terminalSlug: parseTerminalSlug(requireEnv('PROD_TERMINAL_SLUG', env)),
+    employees,
   };
 }
 
@@ -697,14 +770,273 @@ export async function retireLegacyShift(prisma: LegacyShiftDb, input: BootstrapI
   );
 }
 
+export const DEMO_EMPLOYEE_CODES = new Set(['EMP-0147', 'EMP-0148', 'EMP-0201']);
+
+export function isClearlyDemoEmployee(employee: {
+  employeeCode: string;
+  fullName: string;
+  user?: { username: string; role: Role } | null;
+}): boolean {
+  if (employee.user?.role === Role.ADMIN) return false;
+  const code = employee.employeeCode.trim().toUpperCase();
+  const username = employee.user?.username?.trim().toUpperCase() ?? '';
+  if (DEMO_EMPLOYEE_CODES.has(code) || DEMO_EMPLOYEE_CODES.has(username)) return true;
+  const name = employee.fullName.trim();
+  if (/^Demo Employee(\s|$)/i.test(name)) return true;
+  if (/^Demo Supervisor(\s|$)/i.test(name)) return true;
+  return false;
+}
+
+export type ProductionStaffDb = {
+  user: {
+    findUnique: (args: {
+      where: { username: string };
+      include?: { employee: true };
+    }) => Promise<{
+      id: string;
+      username: string;
+      passwordHash: string;
+      role: Role;
+      isActive: boolean;
+      employeeId: string | null;
+      employee: {
+        id: string;
+        employeeCode: string;
+        badgeNumber: string;
+        fullName: string;
+        position: string | null;
+        company: string;
+        isActive: boolean;
+        defaultProjectId: string | null;
+      } | null;
+    } | null>;
+    create: (args: {
+      data: {
+        username: string;
+        passwordHash: string;
+        role: Role;
+        employeeId: string;
+        isActive: boolean;
+      };
+    }) => Promise<{ id: string; username: string }>;
+    update: (args: { where: { id: string }; data: { isActive?: boolean } }) => Promise<unknown>;
+  };
+  employee: {
+    findUnique: (args: {
+      where: { employeeCode?: string; badgeNumber?: string };
+      include?: { user: true };
+    }) => Promise<{
+      id: string;
+      employeeCode: string;
+      badgeNumber: string;
+      fullName: string;
+      position: string | null;
+      company: string;
+      isActive: boolean;
+      defaultProjectId: string | null;
+      user?: { id: string; username: string; role: Role; isActive: boolean; passwordHash: string } | null;
+    } | null>;
+    findMany: (args?: { include?: { user: true } }) => Promise<
+      Array<{
+        id: string;
+        employeeCode: string;
+        badgeNumber: string;
+        fullName: string;
+        isActive: boolean;
+        user?: { id: string; username: string; role: Role; isActive: boolean } | null;
+      }>
+    >;
+    create: (args: {
+      data: {
+        employeeCode: string;
+        badgeNumber: string;
+        fullName: string;
+        position: string;
+        company: string;
+        defaultProjectId: string;
+        isActive: boolean;
+      };
+    }) => Promise<{ id: string; employeeCode: string }>;
+    update: (args: { where: { id: string }; data: { isActive?: boolean } }) => Promise<unknown>;
+  };
+  employeeShiftAssignment: {
+    count: (args: { where: { employeeId?: string } }) => Promise<number>;
+    create?: (args: unknown) => Promise<unknown>;
+  };
+  attendanceRecord: {
+    count: (args: { where: { employeeId?: string } }) => Promise<number>;
+  };
+};
+
+export async function ensureProductionEmployee(
+  prisma: ProductionStaffDb,
+  spec: ProductionEmployeeSpec,
+  projectId: string
+): Promise<{ employeeId: string; created: boolean }> {
+  const byUsername = await prisma.user.findUnique({
+    where: { username: spec.username },
+    include: { employee: true },
+  });
+  const byCode = await prisma.employee.findUnique({
+    where: { employeeCode: spec.employeeCode },
+    include: { user: true },
+  });
+  const byBadge = await prisma.employee.findUnique({
+    where: { badgeNumber: spec.badgeNumber },
+    include: { user: true },
+  });
+
+  if (byCode && byBadge && byCode.id !== byBadge.id) {
+    conflict(
+      `Conflict: PROD_EMPLOYEE_${spec.index} employeeCode and badgeNumber refer to different employees.`
+    );
+  }
+
+  if (byUsername) {
+    if (byUsername.role !== Role.EMPLOYEE) {
+      conflict(
+        `Conflict: username ${spec.username} already exists with role=${byUsername.role}, expected EMPLOYEE.`
+      );
+    }
+    if (!byUsername.employee) {
+      conflict(`Conflict: username ${spec.username} already exists without a linked employee.`);
+    }
+    const linked = byUsername.employee;
+    if (byCode && byCode.id !== linked.id) {
+      conflict(
+        `Conflict: username ${spec.username} is linked to a different employee than PROD_EMPLOYEE_${spec.index}_CODE.`
+      );
+    }
+    if (byBadge && byBadge.id !== linked.id) {
+      conflict(
+        `Conflict: username ${spec.username} is linked to a different employee than PROD_EMPLOYEE_${spec.index}_BADGE.`
+      );
+    }
+    if (linked.employeeCode !== spec.employeeCode || linked.badgeNumber !== spec.badgeNumber) {
+      conflict(
+        `Conflict: username ${spec.username} belongs to employee ${linked.employeeCode}/${linked.badgeNumber}, expected ${spec.employeeCode}/${spec.badgeNumber}.`
+      );
+    }
+    const passwordMatches = await bcrypt.compare(spec.password, byUsername.passwordHash);
+    if (!passwordMatches) {
+      conflict(
+        `Conflict: username ${spec.username} already exists with a different password. Refusing to change existing records.`
+      );
+    }
+    console.log(`Employee ${linked.employeeCode} already exists — unchanged.`);
+    return { employeeId: linked.id, created: false };
+  }
+
+  const existingEmployee = byCode ?? byBadge ?? null;
+  if (existingEmployee?.user) {
+    conflict(
+      `Conflict: employee ${existingEmployee.employeeCode} already has username ${existingEmployee.user.username}, expected ${spec.username}.`
+    );
+  }
+  if (existingEmployee) {
+    if (existingEmployee.employeeCode !== spec.employeeCode || existingEmployee.badgeNumber !== spec.badgeNumber) {
+      conflict(
+        `Conflict: employee identifiers for PROD_EMPLOYEE_${spec.index} do not match the existing record ${existingEmployee.employeeCode}/${existingEmployee.badgeNumber}.`
+      );
+    }
+    const createdUser = await prisma.user.create({
+      data: {
+        username: spec.username,
+        passwordHash: await bcrypt.hash(spec.password, 10),
+        role: Role.EMPLOYEE,
+        employeeId: existingEmployee.id,
+        isActive: true,
+      },
+    });
+    console.log(`Created employee user ${createdUser.username} linked to existing employee ${existingEmployee.employeeCode}.`);
+    return { employeeId: existingEmployee.id, created: false };
+  }
+
+  const employee = await prisma.employee.create({
+    data: {
+      employeeCode: spec.employeeCode,
+      badgeNumber: spec.badgeNumber,
+      fullName: spec.fullName,
+      position: spec.position,
+      company: 'Bin Quraya',
+      defaultProjectId: projectId,
+      isActive: true,
+    },
+  });
+  const createdUser = await prisma.user.create({
+    data: {
+      username: spec.username,
+      passwordHash: await bcrypt.hash(spec.password, 10),
+      role: Role.EMPLOYEE,
+      employeeId: employee.id,
+      isActive: true,
+    },
+  });
+  console.log(`Created employee ${employee.employeeCode} and user ${createdUser.username}.`);
+  return { employeeId: employee.id, created: true };
+}
+
+export async function ensureProductionEmployees(
+  prisma: ProductionStaffDb,
+  input: BootstrapInput,
+  projectId: string
+): Promise<{ created: number; unchanged: number; assignmentCreates: number }> {
+  let created = 0;
+  let unchanged = 0;
+  for (const spec of input.employees) {
+    const result = await ensureProductionEmployee(prisma, spec, projectId);
+    if (result.created) created += 1;
+    else unchanged += 1;
+  }
+  return { created, unchanged, assignmentCreates: 0 };
+}
+
+export async function deactivateUnusedDemoEmployees(prisma: ProductionStaffDb): Promise<{ deactivated: number }> {
+  const employees = await prisma.employee.findMany({ include: { user: true } });
+  let deactivated = 0;
+  for (const employee of employees) {
+    if (!isClearlyDemoEmployee(employee)) continue;
+    const attendanceCount = await prisma.attendanceRecord.count({
+      where: { employeeId: employee.id },
+    });
+    if (attendanceCount > 0) {
+      console.log(
+        `Demo employee ${employee.employeeCode} has attendance — left unchanged.`
+      );
+      continue;
+    }
+    const userInactive = !employee.user || employee.user.isActive === false;
+    if (!employee.isActive && userInactive) {
+      continue;
+    }
+    if (employee.isActive) {
+      await prisma.employee.update({
+        where: { id: employee.id },
+        data: { isActive: false },
+      });
+    }
+    if (employee.user && employee.user.isActive) {
+      await prisma.user.update({
+        where: { id: employee.user.id },
+        data: { isActive: false },
+      });
+    }
+    console.log(`Deactivated demo employee ${employee.employeeCode}.`);
+    deactivated += 1;
+  }
+  return { deactivated };
+}
+
 export async function bootstrapProduction(prisma: PrismaClient, input: BootstrapInput): Promise<void> {
   const project = await ensureProject(prisma, input);
   for (const spec of input.shifts) {
     await ensureShift(prisma, spec);
   }
   await ensureAdmin(prisma as unknown as AdminDb, input, project.id);
+  await ensureProductionEmployees(prisma as unknown as ProductionStaffDb, input, project.id);
   await ensureTerminal(prisma, input, project.id);
   await retireLegacyShift(prisma, input);
+  await deactivateUnusedDemoEmployees(prisma as unknown as ProductionStaffDb);
 }
 
 function isExecutedDirectly(): boolean {

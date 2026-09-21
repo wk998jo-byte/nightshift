@@ -16,6 +16,9 @@ import {
   retireLegacyShift,
   ensureAdmin,
   ensureTerminal,
+  ensureProductionEmployees,
+  deactivateUnusedDemoEmployees,
+  isClearlyDemoEmployee,
   BootstrapError,
 } from './bootstrap-production';
 
@@ -42,6 +45,24 @@ function validEnv(overrides: Record<string, string> = {}): Record<string, string
     PROD_SHIFT_2_GRACE_MINUTES: '5',
     PROD_TERMINAL_NAME: 'Gate Tablet',
     PROD_TERMINAL_SLUG: 'riyadh-gate',
+    PROD_EMPLOYEE_1_FULL_NAME: 'Test Operator One',
+    PROD_EMPLOYEE_1_CODE: 'T-1001',
+    PROD_EMPLOYEE_1_BADGE: 'T-1001',
+    PROD_EMPLOYEE_1_USERNAME: 'T-1001',
+    PROD_EMPLOYEE_1_PASSWORD: 'employee-pass-one',
+    PROD_EMPLOYEE_1_POSITION: 'Control Operator',
+    PROD_EMPLOYEE_2_FULL_NAME: 'Test Operator Two',
+    PROD_EMPLOYEE_2_CODE: 'T-1002',
+    PROD_EMPLOYEE_2_BADGE: 'T-1002',
+    PROD_EMPLOYEE_2_USERNAME: 'T-1002',
+    PROD_EMPLOYEE_2_PASSWORD: 'employee-pass-two',
+    PROD_EMPLOYEE_2_POSITION: 'Safety Operator',
+    PROD_EMPLOYEE_3_FULL_NAME: 'Test Operator Three',
+    PROD_EMPLOYEE_3_CODE: 'T-1003',
+    PROD_EMPLOYEE_3_BADGE: 'T-1003',
+    PROD_EMPLOYEE_3_USERNAME: 'T-1003',
+    PROD_EMPLOYEE_3_PASSWORD: 'employee-pass-three',
+    PROD_EMPLOYEE_3_POSITION: 'Safety Operator',
     ...overrides,
   };
 }
@@ -109,6 +130,40 @@ describe('production bootstrap guards and validation', () => {
     assert.equal(input.shifts[1].crossesMidnight, true);
     assert.ok('adminPassword' in input);
     assert.notEqual(input.adminPassword, 'admin123');
+    assert.equal(input.employees.length, 3);
+    assert.equal(input.employees[0].employeeCode, 'T-1001');
+    assert.equal(input.employees[0].username, 'T-1001');
+    assert.equal(input.employees[2].position, 'Safety Operator');
+  });
+
+  it('rejects colliding production employee identifiers', () => {
+    assert.throws(
+      () =>
+        readBootstrapInput(
+          validEnv({
+            PROD_EMPLOYEE_2_CODE: 'T-1001',
+          })
+        ),
+      (err: unknown) => err instanceof BootstrapError && /already used by PROD_EMPLOYEE_1/.test(err.message)
+    );
+    assert.throws(
+      () =>
+        readBootstrapInput(
+          validEnv({
+            PROD_EMPLOYEE_1_USERNAME: 'ops-admin',
+          })
+        ),
+      (err: unknown) => err instanceof BootstrapError && /already used by PROD_ADMIN/.test(err.message)
+    );
+    assert.throws(
+      () =>
+        readBootstrapInput(
+          validEnv({
+            PROD_EMPLOYEE_1_PASSWORD: '1234',
+          })
+        ),
+      (err: unknown) => err instanceof BootstrapError && /demo password/.test(err.message)
+    );
   });
 
   it('rejects duplicate shift names', () => {
@@ -567,5 +622,360 @@ describe('legacy production admin', () => {
     assert.equal(createdTerminals.length, 1);
     assert.equal(updates.length, 0);
     assert.match(warnings[0], /WARNING: Legacy shift/);
+  });
+});
+
+function mockStaffWorld(options: {
+  employees?: Array<{
+    id: string;
+    employeeCode: string;
+    badgeNumber: string;
+    fullName: string;
+    position?: string | null;
+    company?: string;
+    isActive?: boolean;
+    defaultProjectId: string | null;
+  }>;
+  users?: Array<{
+    id: string;
+    username: string;
+    passwordHash: string;
+    role: Role;
+    isActive?: boolean;
+    employeeId: string;
+  }>;
+  attendanceCountByEmployee?: Record<string, number>;
+}) {
+  const employees = (options.employees ?? []).map((e) => ({
+    ...e,
+    position: e.position ?? null,
+    company: e.company ?? 'Bin Quraya',
+    isActive: e.isActive ?? true,
+  }));
+  const users = (options.users ?? []).map((u) => ({
+    ...u,
+    isActive: u.isActive ?? true,
+  }));
+  let seq = 1;
+  const assignmentCreates: unknown[] = [];
+  const logs: string[] = [];
+
+  const prisma: Record<string, unknown> = {};
+  Object.assign(prisma, {
+    user: {
+      async findUnique(args: { where: { username: string } }) {
+        const user = users.find((u) => u.username === args.where.username) ?? null;
+        if (!user) return null;
+        const employee = employees.find((e) => e.id === user.employeeId) ?? null;
+        return { ...user, employee };
+      },
+      async create(args: {
+        data: {
+          username: string;
+          passwordHash: string;
+          role: Role;
+          employeeId: string;
+          isActive: boolean;
+        };
+      }) {
+        const row = { id: `user-${seq++}`, ...args.data };
+        users.push(row);
+        return row;
+      },
+      async update(args: { where: { id: string }; data: { isActive?: boolean } }) {
+        const user = users.find((u) => u.id === args.where.id);
+        if (user && args.data.isActive !== undefined) user.isActive = args.data.isActive;
+        return args;
+      },
+    },
+    employee: {
+      async findUnique(args: { where: { employeeCode?: string; badgeNumber?: string } }) {
+        const found =
+          employees.find((e) =>
+            args.where.employeeCode
+              ? e.employeeCode === args.where.employeeCode
+              : e.badgeNumber === args.where.badgeNumber
+          ) ?? null;
+        if (!found) return null;
+        const user = users.find((u) => u.employeeId === found.id) ?? null;
+        return { ...found, user };
+      },
+      async findMany() {
+        return employees.map((e) => ({
+          ...e,
+          user: users.find((u) => u.employeeId === e.id) ?? null,
+        }));
+      },
+      async create(args: {
+        data: {
+          employeeCode: string;
+          badgeNumber: string;
+          fullName: string;
+          position: string;
+          company: string;
+          defaultProjectId: string;
+          isActive: boolean;
+        };
+      }) {
+        const row = { id: `emp-${seq++}`, ...args.data };
+        employees.push(row);
+        return row;
+      },
+      async update(args: { where: { id: string }; data: { isActive?: boolean } }) {
+        const employee = employees.find((e) => e.id === args.where.id);
+        if (employee && args.data.isActive !== undefined) employee.isActive = args.data.isActive;
+        return args;
+      },
+    },
+    employeeShiftAssignment: {
+      async count() {
+        return 0;
+      },
+      async create(args: unknown) {
+        assignmentCreates.push(args);
+        throw new Error('shift assignment must not be created during employee bootstrap');
+      },
+    },
+    attendanceRecord: {
+      async count(args: { where: { employeeId?: string } }) {
+        return options.attendanceCountByEmployee?.[args.where.employeeId ?? ''] ?? 0;
+      },
+    },
+  });
+
+  return { prisma, employees, users, assignmentCreates, logs };
+}
+
+describe('production employees bootstrap', () => {
+  const projectId = 'proj-real';
+
+  it('creates three EMPLOYEE users with bcrypt passwords and no shift assignment', async () => {
+    const { prisma, employees, users, assignmentCreates } = mockStaffWorld({});
+    const input = readBootstrapInput(validEnv());
+    const originalLog = console.log;
+    console.log = () => undefined;
+    try {
+      const result = await ensureProductionEmployees(prisma as never, input, projectId);
+      assert.equal(result.created, 3);
+      assert.equal(result.assignmentCreates, 0);
+    } finally {
+      console.log = originalLog;
+    }
+
+    assert.equal(employees.length, 3);
+    assert.equal(users.length, 3);
+    assert.equal(assignmentCreates.length, 0);
+    for (const spec of input.employees) {
+      const employee = employees.find((e) => e.employeeCode === spec.employeeCode);
+      const user = users.find((u) => u.username === spec.username);
+      assert.ok(employee);
+      assert.ok(user);
+      assert.equal(user.role, Role.EMPLOYEE);
+      assert.equal(user.isActive, true);
+      assert.equal(employee.isActive, true);
+      assert.equal(employee.company, 'Bin Quraya');
+      assert.equal(employee.position, spec.position);
+      assert.equal(employee.defaultProjectId, projectId);
+      assert.notEqual(user.passwordHash, spec.password);
+      assert.match(user.passwordHash, /^\$2[aby]\$/);
+      assert.equal(await bcrypt.compare(spec.password, user.passwordHash), true);
+    }
+  });
+
+  it('rerun does not create duplicates or change password', async () => {
+    const { prisma, employees, users } = mockStaffWorld({});
+    const input = readBootstrapInput(validEnv());
+    const originalLog = console.log;
+    console.log = () => undefined;
+    try {
+      await ensureProductionEmployees(prisma as never, input, projectId);
+      const firstHash = users[0].passwordHash;
+      const second = await ensureProductionEmployees(prisma as never, input, projectId);
+      assert.equal(second.created, 0);
+      assert.equal(second.unchanged, 3);
+      assert.equal(employees.length, 3);
+      assert.equal(users.length, 3);
+      assert.equal(users[0].passwordHash, firstHash);
+    } finally {
+      console.log = originalLog;
+    }
+  });
+
+  it('fails clearly when username/badge/code belong to someone else', async () => {
+    const { prisma, employees, users } = mockStaffWorld({
+      employees: [
+        {
+          id: 'emp-other',
+          employeeCode: 'T-1001',
+          badgeNumber: 'OTHER',
+          fullName: 'Someone Else',
+          defaultProjectId: projectId,
+        },
+      ],
+      users: [
+        {
+          id: 'user-other',
+          username: 'other-user',
+          passwordHash: await bcrypt.hash('other-pass-word', 10),
+          role: Role.EMPLOYEE,
+          employeeId: 'emp-other',
+        },
+      ],
+    });
+    const input = readBootstrapInput(validEnv());
+    await assert.rejects(
+      () => ensureProductionEmployees(prisma as never, input, projectId),
+      (err: unknown) => err instanceof BootstrapError && /already has username/.test(err.message)
+    );
+    assert.equal(employees.length, 1);
+    assert.equal(users.length, 1);
+  });
+
+  it('refuses to change an existing employee password silently', async () => {
+    const oldHash = await bcrypt.hash('original-employee-pass', 10);
+    const { prisma, users } = mockStaffWorld({
+      employees: [
+        {
+          id: 'emp-1',
+          employeeCode: 'T-1001',
+          badgeNumber: 'T-1001',
+          fullName: 'Test Operator One',
+          defaultProjectId: projectId,
+        },
+      ],
+      users: [
+        {
+          id: 'user-1',
+          username: 'T-1001',
+          passwordHash: oldHash,
+          role: Role.EMPLOYEE,
+          employeeId: 'emp-1',
+        },
+      ],
+    });
+    const input = readBootstrapInput(validEnv());
+    await assert.rejects(
+      () => ensureProductionEmployeeForTest(prisma, input, projectId),
+      (err: unknown) =>
+        err instanceof BootstrapError && /different password/.test(err.message)
+    );
+    assert.equal(users[0].passwordHash, oldHash);
+  });
+});
+
+async function ensureProductionEmployeeForTest(
+  prisma: unknown,
+  input: ReturnType<typeof readBootstrapInput>,
+  projectId: string
+) {
+  return ensureProductionEmployees(prisma as never, input, projectId);
+}
+
+describe('demo employee deactivation and shift schedule visibility', () => {
+  it('deactivates unused demo employees without deleting records', async () => {
+    const { prisma, employees, users } = mockStaffWorld({
+      employees: [
+        {
+          id: 'demo-1',
+          employeeCode: 'EMP-0147',
+          badgeNumber: '0147',
+          fullName: 'Demo Employee',
+          defaultProjectId: 'proj-old',
+        },
+        {
+          id: 'demo-2',
+          employeeCode: 'EMP-0148',
+          badgeNumber: '0148',
+          fullName: 'Demo Employee Two',
+          defaultProjectId: 'proj-old',
+        },
+        {
+          id: 'demo-sv',
+          employeeCode: 'EMP-0201',
+          badgeNumber: '0201',
+          fullName: 'Demo Supervisor',
+          defaultProjectId: 'proj-old',
+        },
+      ],
+      users: [
+        {
+          id: 'u1',
+          username: 'EMP-0147',
+          passwordHash: 'x',
+          role: Role.EMPLOYEE,
+          employeeId: 'demo-1',
+        },
+        {
+          id: 'u2',
+          username: 'EMP-0148',
+          passwordHash: 'x',
+          role: Role.EMPLOYEE,
+          employeeId: 'demo-2',
+        },
+        {
+          id: 'u3',
+          username: 'EMP-0201',
+          passwordHash: 'x',
+          role: Role.SUPERVISOR,
+          employeeId: 'demo-sv',
+        },
+      ],
+    });
+    const originalLog = console.log;
+    console.log = () => undefined;
+    try {
+      const result = await deactivateUnusedDemoEmployees(prisma as never);
+      assert.equal(result.deactivated, 3);
+    } finally {
+      console.log = originalLog;
+    }
+    assert.equal(employees.every((e) => e.isActive === false), true);
+    assert.equal(users.every((u) => u.isActive === false), true);
+  });
+
+  it('does not deactivate a demo employee who has attendance', async () => {
+    const { prisma, employees, users } = mockStaffWorld({
+      employees: [
+        {
+          id: 'demo-1',
+          employeeCode: 'EMP-0147',
+          badgeNumber: '0147',
+          fullName: 'Demo Employee',
+          defaultProjectId: 'proj-old',
+        },
+      ],
+      users: [
+        {
+          id: 'u1',
+          username: 'EMP-0147',
+          passwordHash: 'x',
+          role: Role.EMPLOYEE,
+          employeeId: 'demo-1',
+        },
+      ],
+      attendanceCountByEmployee: { 'demo-1': 2 },
+    });
+    await deactivateUnusedDemoEmployees(prisma as never);
+    assert.equal(employees[0].isActive, true);
+    assert.equal(users[0].isActive, true);
+  });
+
+  it('recognizes demo identifiers without treating ADMIN as demo', () => {
+    assert.equal(
+      isClearlyDemoEmployee({ employeeCode: 'EMP-0147', fullName: 'Demo Employee' }),
+      true
+    );
+    assert.equal(
+      isClearlyDemoEmployee({ employeeCode: 'EMP-0201', fullName: 'Demo Supervisor' }),
+      true
+    );
+    assert.equal(
+      isClearlyDemoEmployee({
+        employeeCode: 'ADMIN',
+        fullName: 'Demo Admin',
+        user: { username: 'ops-admin', role: Role.ADMIN },
+      }),
+      false
+    );
   });
 });

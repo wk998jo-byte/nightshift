@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession, writeAudit } from '@/lib/auth';
 import { prisma } from '@/lib/db';
-import { canManageSchedule, choiceForAssignment, type ShiftChoice } from '@/lib/shift-catalog';
+import {
+  canManageSchedule,
+  choiceForAssignment,
+  SHIFT_SCHEDULE_EMPLOYEE_WHERE,
+  type ShiftChoice,
+} from '@/lib/shift-catalog';
 import {
   loadShiftCatalog,
   saveScheduleItems,
@@ -34,7 +39,7 @@ export async function GET(req: NextRequest) {
 
   const catalog = await loadShiftCatalog(prisma);
   const employees = await prisma.employee.findMany({
-    where: { isActive: true, user: { role: 'EMPLOYEE' } },
+    where: SHIFT_SCHEDULE_EMPLOYEE_WHERE,
     orderBy: { fullName: 'asc' },
     select: {
       id: true,
