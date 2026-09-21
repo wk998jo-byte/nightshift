@@ -160,6 +160,78 @@ type BootstrapInput = {
   terminalSlug: string;
 };
 
+export type AdminDb = {
+  user: {
+    findUnique: (args: {
+      where: { username: string };
+      include: { employee: true };
+    }) => Promise<{
+      id: string;
+      username: string;
+      passwordHash: string;
+      role: Role;
+      employeeId: string | null;
+      employee: {
+        id: string;
+        employeeCode: string;
+        badgeNumber: string;
+        fullName: string;
+        defaultProjectId: string | null;
+        company: string;
+      } | null;
+    } | null>;
+    create: (args: {
+      data: {
+        username: string;
+        passwordHash: string;
+        role: Role;
+        employeeId: string;
+      };
+    }) => Promise<{ id: string; username: string }>;
+    update: (args: { where: { id: string }; data: { passwordHash: string; role: Role } }) => Promise<unknown>;
+  };
+  employee: {
+    findUnique: (args: {
+      where: { employeeCode?: string; badgeNumber?: string };
+      include?: { user: true };
+    }) => Promise<{
+      id: string;
+      employeeCode: string;
+      badgeNumber: string;
+      fullName: string;
+      defaultProjectId: string | null;
+      user?: { id: string; username: string } | null;
+    } | null>;
+    create: (args: {
+      data: {
+        employeeCode: string;
+        badgeNumber: string;
+        fullName: string;
+        defaultProjectId: string;
+      };
+    }) => Promise<{ id: string; employeeCode: string }>;
+    update: (args: {
+      where: { id: string };
+      data: {
+        employeeCode: string;
+        badgeNumber: string;
+        fullName: string;
+        defaultProjectId: string;
+        company: string;
+      };
+    }) => Promise<unknown>;
+  };
+  employeeShiftAssignment: {
+    count: (args: { where: { employeeId?: string; shiftId?: string } }) => Promise<number>;
+  };
+  attendanceRecord: {
+    count: (args: { where: { employeeId?: string; shiftId?: string } }) => Promise<number>;
+  };
+  $transaction?: <T>(fn: (tx: AdminDb) => Promise<T>) => Promise<T>;
+};
+
+const LEGACY_ADMIN_CODE = 'ADMIN';
+
 export type LegacyShiftDb = {
   shift: {
     findMany: (args: {
@@ -168,10 +240,10 @@ export type LegacyShiftDb = {
     update: (args: { where: { id: string }; data: { isActive: boolean } }) => Promise<unknown>;
   };
   employeeShiftAssignment: {
-    count: (args: { where: { shiftId: string } }) => Promise<number>;
+    count: (args: { where: { shiftId?: string; employeeId?: string } }) => Promise<number>;
   };
   attendanceRecord: {
-    count: (args: { where: { shiftId: string } }) => Promise<number>;
+    count: (args: { where: { shiftId?: string; employeeId?: string } }) => Promise<number>;
   };
 };
 
@@ -307,7 +379,21 @@ async function ensureShift(prisma: PrismaClient, spec: ShiftSpec) {
   return existing;
 }
 
-async function ensureAdmin(prisma: PrismaClient, input: BootstrapInput, projectId: string) {
+async function runAdminTx<T>(prisma: AdminDb, fn: (tx: AdminDb) => Promise<T>): Promise<T> {
+  if (prisma.$transaction) {
+    return prisma.$transaction(fn);
+  }
+  return fn(prisma);
+}
+
+function isLegacyAdminPlaceholder(
+  employee: { employeeCode: string },
+  input: BootstrapInput
+): boolean {
+  return employee.employeeCode === LEGACY_ADMIN_CODE && input.adminEmployeeCode !== LEGACY_ADMIN_CODE;
+}
+
+export async function ensureAdmin(prisma: AdminDb, input: BootstrapInput, projectId: string) {
   const byUsername = await prisma.user.findUnique({
     where: { username: input.adminUsername },
     include: { employee: true },
@@ -339,9 +425,36 @@ async function ensureAdmin(prisma: PrismaClient, input: BootstrapInput, projectI
       conflict(`Conflict: username ${input.adminUsername} already exists without a linked employee.`);
     }
     if (existingEmployee && byUsername.employee.id !== existingEmployee.id) {
-      conflict(`Conflict: username ${input.adminUsername} is linked to a different employee.`);
+      if (!isLegacyAdminPlaceholder(byUsername.employee, input)) {
+        conflict(
+          `Conflict: username ${input.adminUsername} is linked to employee ${byUsername.employee.employeeCode}, but ${input.adminEmployeeCode}/${input.adminBadgeNumber} belong to a different employee. Refusing to modify records.`
+        );
+      }
     }
-    assertEmployeeMatches(byUsername.employee, input, projectId);
+
+    const linked = byUsername.employee;
+    const alreadyMatches =
+      linked.employeeCode === input.adminEmployeeCode &&
+      linked.badgeNumber === input.adminBadgeNumber &&
+      linked.fullName === input.adminFullName &&
+      (!linked.defaultProjectId || linked.defaultProjectId === projectId);
+
+    if (alreadyMatches) {
+      const passwordMatches = await bcrypt.compare(input.adminPassword, byUsername.passwordHash);
+      if (!passwordMatches) {
+        conflict(
+          `Conflict: username ${input.adminUsername} already exists with a different password. Refusing to change existing records.`
+        );
+      }
+      console.log(`Admin user ${byUsername.username} already exists — unchanged.`);
+      return byUsername;
+    }
+
+    if (isLegacyAdminPlaceholder(linked, input)) {
+      return reconcileLegacyAdmin(prisma, byUsername, linked, input, projectId, byCode, byBadge);
+    }
+
+    assertEmployeeMatches(linked, input, projectId);
     const passwordMatches = await bcrypt.compare(input.adminPassword, byUsername.passwordHash);
     if (!passwordMatches) {
       conflict(
@@ -392,6 +505,62 @@ async function ensureAdmin(prisma: PrismaClient, input: BootstrapInput, projectI
   return createdUser;
 }
 
+async function reconcileLegacyAdmin(
+  prisma: AdminDb,
+  user: { id: string; username: string; role: Role },
+  employee: { id: string; employeeCode: string; badgeNumber: string; fullName: string },
+  input: BootstrapInput,
+  projectId: string,
+  byCode: { id: string } | null,
+  byBadge: { id: string } | null
+) {
+  if (byCode && byCode.id !== employee.id) {
+    conflict(
+      `Conflict: PROD_ADMIN_EMPLOYEE_CODE ${input.adminEmployeeCode} is already used by another employee. Refusing to modify records.`
+    );
+  }
+  if (byBadge && byBadge.id !== employee.id) {
+    conflict(
+      `Conflict: PROD_ADMIN_BADGE_NUMBER ${input.adminBadgeNumber} is already used by another employee. Refusing to modify records.`
+    );
+  }
+
+  const assignmentCount = await prisma.employeeShiftAssignment.count({
+    where: { employeeId: employee.id },
+  });
+  const attendanceCount = await prisma.attendanceRecord.count({
+    where: { employeeId: employee.id },
+  });
+  if (assignmentCount > 0 || attendanceCount > 0) {
+    conflict(
+      `Legacy admin employee ${employee.employeeCode} is still in use (${assignmentCount} assignment(s), ${attendanceCount} attendance record(s)). Refusing to modify it.`
+    );
+  }
+
+  const passwordHash = await bcrypt.hash(input.adminPassword, 10);
+  await runAdminTx(prisma, async (tx) => {
+    await tx.employee.update({
+      where: { id: employee.id },
+      data: {
+        employeeCode: input.adminEmployeeCode,
+        badgeNumber: input.adminBadgeNumber,
+        fullName: input.adminFullName,
+        defaultProjectId: projectId,
+        company: 'Bin Quraya',
+      },
+    });
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash,
+        role: Role.ADMIN,
+      },
+    });
+  });
+  console.log('Legacy admin reconciled successfully.');
+  return { id: user.id, username: user.username };
+}
+
 function assertEmployeeMatches(
   employee: { employeeCode: string; badgeNumber: string; fullName: string; defaultProjectId: string | null },
   input: BootstrapInput,
@@ -419,7 +588,7 @@ function assertEmployeeMatches(
   }
 }
 
-async function ensureTerminal(prisma: PrismaClient, input: BootstrapInput, projectId: string) {
+export async function ensureTerminal(prisma: PrismaClient, input: BootstrapInput, projectId: string) {
   const existing = await prisma.qrTerminal.findUnique({ where: { slug: input.terminalSlug } });
   if (!existing) {
     const created = await prisma.qrTerminal.create({
@@ -508,9 +677,10 @@ export async function retireLegacyShift(prisma: LegacyShiftDb, input: BootstrapI
   });
 
   if (assignmentCount > 0 || attendanceCount > 0) {
-    conflict(
-      `Legacy shift ${JSON.stringify(existing.name)} is still in use (${assignmentCount} assignment(s), ${attendanceCount} attendance record(s)). Refusing to modify it. No Shift, Assignment, or Attendance records were deleted or changed.`
+    console.warn(
+      `WARNING: Legacy shift ${JSON.stringify(existing.name)} is still in use (${assignmentCount} assignment(s), ${attendanceCount} attendance record(s)). Left unchanged.`
     );
+    return;
   }
 
   if (!existing.isActive) {
@@ -532,7 +702,7 @@ export async function bootstrapProduction(prisma: PrismaClient, input: Bootstrap
   for (const spec of input.shifts) {
     await ensureShift(prisma, spec);
   }
-  await ensureAdmin(prisma, input, project.id);
+  await ensureAdmin(prisma as unknown as AdminDb, input, project.id);
   await ensureTerminal(prisma, input, project.id);
   await retireLegacyShift(prisma, input);
 }

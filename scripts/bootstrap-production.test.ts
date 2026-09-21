@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import bcrypt from 'bcryptjs';
+import { Role } from '@prisma/client';
 import {
   assertBootstrapAllowed,
   assertSafeAdminPassword,
@@ -12,6 +14,8 @@ import {
   parseTerminalSlug,
   readBootstrapInput,
   retireLegacyShift,
+  ensureAdmin,
+  ensureTerminal,
   BootstrapError,
 } from './bootstrap-production';
 
@@ -176,7 +180,7 @@ describe('legacy production shift', () => {
     assert.deepEqual(updates, [{ id: 'legacy-1', isActive: false }]);
   });
 
-  it('legacy used → bootstrap refuses to modify it', async () => {
+  it('legacy used → warning and left unchanged', async () => {
     const { prisma, updates } = mockLegacyDb({
       shift: {
         id: 'legacy-1',
@@ -185,8 +189,8 @@ describe('legacy production shift', () => {
         endTime: '06:00',
         isActive: true,
       },
-      assignmentCount: 2,
-      attendanceCount: 1,
+      assignmentCount: 3,
+      attendanceCount: 0,
     });
     const input = readBootstrapInput(
       validEnv({
@@ -195,15 +199,20 @@ describe('legacy production shift', () => {
         PROD_SHIFT_END_TIME: '06:00',
       })
     );
-    await assert.rejects(
-      () => retireLegacyShift(prisma, input),
-      (err: unknown) =>
-        err instanceof BootstrapError &&
-        /still in use/.test(err.message) &&
-        /2 assignment/.test(err.message) &&
-        /1 attendance/.test(err.message)
-    );
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    };
+    try {
+      await retireLegacyShift(prisma, input);
+    } finally {
+      console.warn = originalWarn;
+    }
     assert.equal(updates.length, 0);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /WARNING: Legacy shift/);
+    assert.match(warnings[0], /3 assignment/);
   });
 
   it('no legacy → succeeds', async () => {
@@ -221,5 +230,342 @@ describe('legacy production shift', () => {
     assert.equal(input.legacyShift, undefined);
     assert.equal(wasQueried(), false);
     assert.equal(updates.length, 0);
+  });
+});
+
+function mockAdminWorld(options: {
+  employees: Array<{
+    id: string;
+    employeeCode: string;
+    badgeNumber: string;
+    fullName: string;
+    defaultProjectId: string | null;
+    company?: string;
+  }>;
+  users: Array<{
+    id: string;
+    username: string;
+    passwordHash: string;
+    role: Role;
+    employeeId: string;
+  }>;
+  assignmentCountByEmployee?: Record<string, number>;
+  attendanceCountByEmployee?: Record<string, number>;
+  terminals?: Array<{
+    id: string;
+    projectId: string;
+    name: string;
+    slug: string;
+    rotationSeconds: number;
+  }>;
+}) {
+  const employees = options.employees.map((e) => ({ company: 'Demo Company', ...e }));
+  const users = [...options.users];
+  const terminals = [...(options.terminals ?? [])];
+  const employeeUpdates: unknown[] = [];
+  const userUpdates: unknown[] = [];
+  const createdTerminals: unknown[] = [];
+
+  const prisma: Record<string, unknown> = {};
+  Object.assign(prisma, {
+    user: {
+      async findUnique(args: { where: { username: string } }) {
+        const user = users.find((u) => u.username === args.where.username) ?? null;
+        if (!user) return null;
+        const employee = employees.find((e) => e.id === user.employeeId) ?? null;
+        return { ...user, employee };
+      },
+      async create() {
+        throw new Error('unexpected user.create');
+      },
+      async update(args: { where: { id: string }; data: { passwordHash: string; role: Role } }) {
+        userUpdates.push(args);
+        const user = users.find((u) => u.id === args.where.id);
+        if (user) {
+          user.passwordHash = args.data.passwordHash;
+          user.role = args.data.role;
+        }
+        return args;
+      },
+    },
+    employee: {
+      async findUnique(args: { where: { employeeCode?: string; badgeNumber?: string } }) {
+        const found =
+          employees.find((e) =>
+            args.where.employeeCode
+              ? e.employeeCode === args.where.employeeCode
+              : e.badgeNumber === args.where.badgeNumber
+          ) ?? null;
+        if (!found) return null;
+        const user = users.find((u) => u.employeeId === found.id) ?? null;
+        return { ...found, user };
+      },
+      async create() {
+        throw new Error('unexpected employee.create');
+      },
+      async update(args: {
+        where: { id: string };
+        data: {
+          employeeCode: string;
+          badgeNumber: string;
+          fullName: string;
+          defaultProjectId: string;
+          company: string;
+        };
+      }) {
+        employeeUpdates.push(args);
+        const employee = employees.find((e) => e.id === args.where.id);
+        if (employee) {
+          employee.employeeCode = args.data.employeeCode;
+          employee.badgeNumber = args.data.badgeNumber;
+          employee.fullName = args.data.fullName;
+          employee.defaultProjectId = args.data.defaultProjectId;
+          employee.company = args.data.company;
+        }
+        return args;
+      },
+    },
+    employeeShiftAssignment: {
+      async count(args: { where: { employeeId?: string; shiftId?: string } }) {
+        if (args.where.employeeId) {
+          return options.assignmentCountByEmployee?.[args.where.employeeId] ?? 0;
+        }
+        return 0;
+      },
+    },
+    attendanceRecord: {
+      async count(args: { where: { employeeId?: string; shiftId?: string } }) {
+        if (args.where.employeeId) {
+          return options.attendanceCountByEmployee?.[args.where.employeeId] ?? 0;
+        }
+        return 0;
+      },
+    },
+    qrTerminal: {
+      async findUnique(args: { where: { slug: string } }) {
+        return terminals.find((t) => t.slug === args.where.slug) ?? null;
+      },
+      async create(args: { data: { projectId: string; name: string; slug: string; rotationSeconds: number } }) {
+        createdTerminals.push(args.data);
+        terminals.push({ id: 'term-1', ...args.data });
+        return { id: 'term-1', ...args.data };
+      },
+    },
+    async $transaction<T>(fn: (tx: typeof prisma) => Promise<T>) {
+      return fn(prisma);
+    },
+  });
+
+  return { prisma, employees, users, employeeUpdates, userUpdates, createdTerminals, terminals };
+}
+
+describe('legacy production admin', () => {
+  const projectId = 'proj-real';
+
+  it('legacy ADMIN placeholder without attendance/assignments becomes the real admin', async () => {
+    const oldHash = await bcrypt.hash('old-legacy-pass', 10);
+    const { prisma, employees, users } = mockAdminWorld({
+      employees: [
+        {
+          id: 'emp-admin',
+          employeeCode: 'ADMIN',
+          badgeNumber: '0001',
+          fullName: 'Demo Admin',
+          defaultProjectId: 'proj-old',
+        },
+      ],
+      users: [
+        {
+          id: 'user-admin',
+          username: 'ops-admin',
+          passwordHash: oldHash,
+          role: Role.ADMIN,
+          employeeId: 'emp-admin',
+        },
+      ],
+    });
+    const input = readBootstrapInput(validEnv());
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      logs.push(args.map(String).join(' '));
+    };
+    try {
+      await ensureAdmin(prisma as never, input, projectId);
+    } finally {
+      console.log = originalLog;
+    }
+
+    assert.equal(employees[0].employeeCode, 'ADM-0001');
+    assert.equal(employees[0].badgeNumber, '1001');
+    assert.equal(employees[0].fullName, 'Operations Admin');
+    assert.equal(employees[0].defaultProjectId, projectId);
+    assert.equal(employees[0].company, 'Bin Quraya');
+    assert.equal(users.length, 1);
+    assert.equal(users[0].role, Role.ADMIN);
+    assert.equal(await bcrypt.compare(input.adminPassword, users[0].passwordHash), true);
+    assert.equal(logs.includes('Legacy admin reconciled successfully.'), true);
+  });
+
+  it('new password is valid after legacy admin reconcile', async () => {
+    const { prisma, users } = mockAdminWorld({
+      employees: [
+        {
+          id: 'emp-admin',
+          employeeCode: 'ADMIN',
+          badgeNumber: '0001',
+          fullName: 'Demo Admin',
+          defaultProjectId: null,
+        },
+      ],
+      users: [
+        {
+          id: 'user-admin',
+          username: 'ops-admin',
+          passwordHash: await bcrypt.hash('not-the-new-one', 10),
+          role: Role.ADMIN,
+          employeeId: 'emp-admin',
+        },
+      ],
+    });
+    const input = readBootstrapInput(validEnv());
+    await ensureAdmin(prisma as never, input, projectId);
+    assert.equal(await bcrypt.compare('a-strong-password', users[0].passwordHash), true);
+    assert.equal(await bcrypt.compare('not-the-new-one', users[0].passwordHash), false);
+  });
+
+  it('target employeeCode/badge conflict => fail without changes', async () => {
+    const oldHash = await bcrypt.hash('old-legacy-pass', 10);
+    const { prisma, employees, users, employeeUpdates, userUpdates } = mockAdminWorld({
+      employees: [
+        {
+          id: 'emp-admin',
+          employeeCode: 'ADMIN',
+          badgeNumber: '0001',
+          fullName: 'Demo Admin',
+          defaultProjectId: null,
+        },
+        {
+          id: 'emp-other',
+          employeeCode: 'ADM-0001',
+          badgeNumber: '9999',
+          fullName: 'Someone Else',
+          defaultProjectId: projectId,
+        },
+      ],
+      users: [
+        {
+          id: 'user-admin',
+          username: 'ops-admin',
+          passwordHash: oldHash,
+          role: Role.ADMIN,
+          employeeId: 'emp-admin',
+        },
+      ],
+    });
+    const input = readBootstrapInput(validEnv());
+    await assert.rejects(
+      () => ensureAdmin(prisma as never, input, projectId),
+      (err: unknown) => err instanceof BootstrapError && /already used by another employee/.test(err.message)
+    );
+    assert.equal(employees[0].employeeCode, 'ADMIN');
+    assert.equal(employees[0].badgeNumber, '0001');
+    assert.equal(users[0].passwordHash, oldHash);
+    assert.equal(employeeUpdates.length, 0);
+    assert.equal(userUpdates.length, 0);
+  });
+
+  it('used legacy admin => fail without changes', async () => {
+    const oldHash = await bcrypt.hash('old-legacy-pass', 10);
+    const { prisma, employees, users, employeeUpdates, userUpdates } = mockAdminWorld({
+      employees: [
+        {
+          id: 'emp-admin',
+          employeeCode: 'ADMIN',
+          badgeNumber: '0001',
+          fullName: 'Demo Admin',
+          defaultProjectId: null,
+        },
+      ],
+      users: [
+        {
+          id: 'user-admin',
+          username: 'ops-admin',
+          passwordHash: oldHash,
+          role: Role.ADMIN,
+          employeeId: 'emp-admin',
+        },
+      ],
+      assignmentCountByEmployee: { 'emp-admin': 2 },
+      attendanceCountByEmployee: { 'emp-admin': 1 },
+    });
+    const input = readBootstrapInput(validEnv());
+    await assert.rejects(
+      () => ensureAdmin(prisma as never, input, projectId),
+      (err: unknown) => err instanceof BootstrapError && /still in use/.test(err.message)
+    );
+    assert.equal(employees[0].employeeCode, 'ADMIN');
+    assert.equal(users[0].passwordHash, oldHash);
+    assert.equal(employeeUpdates.length, 0);
+    assert.equal(userUpdates.length, 0);
+  });
+
+  it('bootstrap completes Admin + Terminal successfully while used legacy shift only warns', async () => {
+    const { prisma, employees, createdTerminals } = mockAdminWorld({
+      employees: [
+        {
+          id: 'emp-admin',
+          employeeCode: 'ADMIN',
+          badgeNumber: '0001',
+          fullName: 'Demo Admin',
+          defaultProjectId: null,
+        },
+      ],
+      users: [
+        {
+          id: 'user-admin',
+          username: 'ops-admin',
+          passwordHash: await bcrypt.hash('old-legacy-pass', 10),
+          role: Role.ADMIN,
+          employeeId: 'emp-admin',
+        },
+      ],
+    });
+    const input = readBootstrapInput(
+      validEnv({
+        PROD_SHIFT_NAME: 'Night Shift',
+        PROD_SHIFT_START_TIME: '18:00',
+        PROD_SHIFT_END_TIME: '06:00',
+      })
+    );
+    await ensureAdmin(prisma as never, input, projectId);
+    await ensureTerminal(prisma as never, input, projectId);
+
+    const { prisma: shiftDb, updates } = mockLegacyDb({
+      shift: {
+        id: 'legacy-1',
+        name: 'Night Shift',
+        startTime: '18:00',
+        endTime: '06:00',
+        isActive: true,
+      },
+      assignmentCount: 3,
+      attendanceCount: 0,
+    });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map(String).join(' '));
+    };
+    try {
+      await retireLegacyShift(shiftDb, input);
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(employees[0].employeeCode, 'ADM-0001');
+    assert.equal(createdTerminals.length, 1);
+    assert.equal(updates.length, 0);
+    assert.match(warnings[0], /WARNING: Legacy shift/);
   });
 });
