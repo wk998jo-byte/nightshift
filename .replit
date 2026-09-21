@@ -8,7 +8,6 @@ channel = "stable-24_05"
 
 [env]
 PORT = "3000"
-DATABASE_URL = "file:./dev.db"
 NEXT_PUBLIC_APP_NAME = "Night Shift Attendance"
 
 [deployment]
