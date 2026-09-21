@@ -9,6 +9,7 @@
     "start:replit": "next start --hostname 0.0.0.0 --port ${PORT:-3000}",
     "replit": "tsx scripts/prepare-db.ts && next dev --hostname 0.0.0.0 --port ${PORT:-3000}",
     "lint": "eslint",
+    "test": "tsx --test src/lib/attendance-timezone.test.ts",
     "db:prepare": "tsx scripts/prepare-db.ts",
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
@@ -25,6 +26,7 @@
     "bcryptjs": "^3.0.3",
     "date-fns": "^4.4.0",
     "jose": "^6.2.12",
+    "luxon": "^3.7.2",
     "next": "16.3.5",
     "prisma": "^6.19.3",
     "qrcode": "^1.5.4",
@@ -37,6 +39,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
     "@types/bcryptjs": "^2.4.6",
+    "@types/luxon": "^3.7.5",
     "@types/node": "^20",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^19",

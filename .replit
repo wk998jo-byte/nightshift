@@ -9,6 +9,7 @@ channel = "stable-24_05"
 [env]
 PORT = "3000"
 NEXT_PUBLIC_APP_NAME = "Night Shift Attendance"
+APP_TIMEZONE = "Asia/Riyadh"
 
 [deployment]
 run = ["sh", "-c", "npm run start:replit"]

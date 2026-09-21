@@ -1,3 +1,11 @@
+import {
+  addCalendarDays,
+  appZoneMinutesOfDay,
+  calendarDateInAppZone,
+  formatTimeInAppZone,
+  fromAppWallTime,
+} from './timezone';
+
 export type AttendanceFlags =
   | 'SCHEDULED'
   | 'PRESENT'
@@ -14,9 +22,7 @@ export type AttendanceFlags =
   | 'WORKING';
 
 export function parseTimeOnDate(workDate: string, hhmm: string): Date {
-  const [y, m, d] = workDate.split('-').map(Number);
-  const [hh, mm] = hhmm.split(':').map(Number);
-  return new Date(y, m - 1, d, hh, mm, 0, 0);
+  return fromAppWallTime(workDate, hhmm);
 }
 
 export function scheduledWindow(
@@ -26,10 +32,8 @@ export function scheduledWindow(
   crossesMidnight: boolean
 ): { scheduledStart: Date; scheduledEnd: Date } {
   const scheduledStart = parseTimeOnDate(workDate, startTime);
-  let scheduledEnd = parseTimeOnDate(workDate, endTime);
-  if (crossesMidnight) {
-    scheduledEnd = new Date(scheduledEnd.getTime() + 24 * 60 * 60 * 1000);
-  }
+  const endDate = crossesMidnight ? addCalendarDays(workDate, 1) : workDate;
+  const scheduledEnd = parseTimeOnDate(endDate, endTime);
   return { scheduledStart, scheduledEnd };
 }
 
@@ -45,9 +49,7 @@ export function formatDuration(totalMinutes: number | null | undefined): string 
 }
 
 export function formatTime(d: Date | string | null | undefined): string {
-  if (!d) return '—';
-  const date = typeof d === 'string' ? new Date(d) : d;
-  return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  return formatTimeInAppZone(d);
 }
 
 export type CalcInput = {
@@ -133,31 +135,22 @@ export function calculateAttendance(input: CalcInput): CalcResult {
   };
 }
 
-/** Resolve which workDate a "now" belongs to for a night shift */
+/** Resolve which workDate a "now" belongs to for a night shift, in APP_TIMEZONE. */
 export function resolveWorkDateForShift(
   now: Date,
   startTime: string,
   endTime: string,
   crossesMidnight: boolean
 ): string {
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const key = (d: Date) =>
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  void startTime;
+  const dateKey = calendarDateInAppZone(now);
+  if (!crossesMidnight) return dateKey;
 
-  if (!crossesMidnight) return key(now);
-
-  const [sh, sm] = startTime.split(':').map(Number);
   const [eh, em] = endTime.split(':').map(Number);
-  const mins = now.getHours() * 60 + now.getMinutes();
   const endMins = eh * 60 + em;
-  // After midnight until end → previous calendar day is workDate
+  const mins = appZoneMinutesOfDay(now);
   if (mins < endMins) {
-    const prev = new Date(now);
-    prev.setDate(prev.getDate() - 1);
-    return key(prev);
+    return addCalendarDays(dateKey, -1);
   }
-  // Also if before start today, still could be previous overnight — but assignment is for tonight's start
-  void sh;
-  void sm;
-  return key(now);
+  return dateKey;
 }

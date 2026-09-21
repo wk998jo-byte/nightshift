@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { resolveWorkDateForShift } from '@/lib/attendance-calc';
+import { calendarDateInAppZone } from '@/lib/timezone';
 
 export async function GET(req: NextRequest) {
   const auth = await getSession();
@@ -17,7 +18,7 @@ export async function GET(req: NextRequest) {
     req.nextUrl.searchParams.get('date') ||
     (night
       ? resolveWorkDateForShift(new Date(), night.startTime, night.endTime, true)
-      : new Date().toISOString().slice(0, 10));
+      : calendarDateInAppZone(new Date()));
 
   const projectId = req.nextUrl.searchParams.get('projectId') || undefined;
 
