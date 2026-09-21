@@ -6,7 +6,10 @@ const nextConfig: NextConfig = {
     root: path.join(__dirname),
   },
   // Allow Replit / preview hosts
-  allowedDevOrigins: ['*.replit.dev', '*.repl.co', '*.kirk.replit.dev'],
+  allowedDevOrigins: [
+    '**.replit.dev',
+    '**.repl.co',
+  ],
   agentRules: false,
 };
 
