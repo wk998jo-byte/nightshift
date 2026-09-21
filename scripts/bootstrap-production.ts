@@ -51,7 +51,7 @@ export function minutesOfDay(hhmm: string): number {
 
 export function computeCrossesMidnight(startTime: string, endTime: string): boolean {
   if (startTime === endTime) {
-    throw new BootstrapError('PROD_SHIFT_START_TIME and PROD_SHIFT_END_TIME cannot be the same.');
+    throw new BootstrapError('Shift start and end times cannot be the same.');
   }
   return minutesOfDay(endTime) <= minutesOfDay(startTime);
 }
@@ -83,13 +83,13 @@ export function parseRadiusMeters(value: string): number {
   return n;
 }
 
-export function parseGraceMinutes(value: string): number {
+export function parseGraceMinutes(value: string, name = 'shift grace minutes'): number {
   if (!/^\d+$/.test(value.trim())) {
-    throw new BootstrapError('PROD_SHIFT_GRACE_MINUTES must be a non-negative integer.');
+    throw new BootstrapError(`${name} must be a non-negative integer.`);
   }
   const n = Number(value);
   if (!Number.isInteger(n) || n < 0 || n > 180) {
-    throw new BootstrapError('PROD_SHIFT_GRACE_MINUTES must be an integer between 0 and 180.');
+    throw new BootstrapError(`${name} must be an integer between 0 and 180.`);
   }
   return n;
 }
@@ -128,6 +128,14 @@ function requirePostgresUrl(url: string): string {
   return url;
 }
 
+type ShiftSpec = {
+  name: string;
+  startTime: string;
+  endTime: string;
+  graceMinutes: number;
+  crossesMidnight: boolean;
+};
+
 type BootstrapInput = {
   adminUsername: string;
   adminPassword: string;
@@ -140,20 +148,32 @@ type BootstrapInput = {
   latitude: number;
   longitude: number;
   radiusMeters: number;
-  shiftName: string;
-  shiftStartTime: string;
-  shiftEndTime: string;
-  shiftGraceMinutes: number;
-  crossesMidnight: boolean;
+  shifts: [ShiftSpec, ShiftSpec];
   terminalName: string;
   terminalSlug: string;
 };
 
+function readShiftSpec(env: EnvMap, index: 1 | 2): ShiftSpec {
+  const prefix = `PROD_SHIFT_${index}`;
+  const startTime = parseHHMM(requireEnv(`${prefix}_START_TIME`, env), `${prefix}_START_TIME`);
+  const endTime = parseHHMM(requireEnv(`${prefix}_END_TIME`, env), `${prefix}_END_TIME`);
+  return {
+    name: requireEnv(`${prefix}_NAME`, env),
+    startTime,
+    endTime,
+    graceMinutes: parseGraceMinutes(requireEnv(`${prefix}_GRACE_MINUTES`, env), `${prefix}_GRACE_MINUTES`),
+    crossesMidnight: computeCrossesMidnight(startTime, endTime),
+  };
+}
+
 export function readBootstrapInput(env: EnvMap = process.env): BootstrapInput {
-  const shiftStartTime = parseHHMM(requireEnv('PROD_SHIFT_START_TIME', env), 'PROD_SHIFT_START_TIME');
-  const shiftEndTime = parseHHMM(requireEnv('PROD_SHIFT_END_TIME', env), 'PROD_SHIFT_END_TIME');
   const adminPassword = requireEnv('PROD_ADMIN_PASSWORD', env);
   assertSafeAdminPassword(adminPassword);
+  const shift1 = readShiftSpec(env, 1);
+  const shift2 = readShiftSpec(env, 2);
+  if (shift1.name === shift2.name) {
+    throw new BootstrapError('PROD_SHIFT_1_NAME and PROD_SHIFT_2_NAME must be different.');
+  }
 
   return {
     adminUsername: requireEnv('PROD_ADMIN_USERNAME', env),
@@ -167,11 +187,7 @@ export function readBootstrapInput(env: EnvMap = process.env): BootstrapInput {
     latitude: parseLatitude(requireEnv('PROD_PROJECT_LATITUDE', env)),
     longitude: parseLongitude(requireEnv('PROD_PROJECT_LONGITUDE', env)),
     radiusMeters: parseRadiusMeters(requireEnv('PROD_PROJECT_RADIUS_METERS', env)),
-    shiftName: requireEnv('PROD_SHIFT_NAME', env),
-    shiftStartTime,
-    shiftEndTime,
-    shiftGraceMinutes: parseGraceMinutes(requireEnv('PROD_SHIFT_GRACE_MINUTES', env)),
-    crossesMidnight: computeCrossesMidnight(shiftStartTime, shiftEndTime),
+    shifts: [shift1, shift2],
     terminalName: requireEnv('PROD_TERMINAL_NAME', env),
     terminalSlug: parseTerminalSlug(requireEnv('PROD_TERMINAL_SLUG', env)),
   };
@@ -218,22 +234,22 @@ async function ensureProject(prisma: PrismaClient, input: BootstrapInput) {
   return existing;
 }
 
-async function ensureShift(prisma: PrismaClient, input: BootstrapInput) {
-  const matches = await prisma.shift.findMany({ where: { name: input.shiftName } });
+async function ensureShift(prisma: PrismaClient, spec: ShiftSpec) {
+  const matches = await prisma.shift.findMany({ where: { name: spec.name } });
   if (matches.length > 1) {
     conflict(
-      `Conflict: multiple shifts named ${JSON.stringify(input.shiftName)} already exist. Refusing to guess.`
+      `Conflict: multiple shifts named ${JSON.stringify(spec.name)} already exist. Refusing to guess.`
     );
   }
   const existing = matches[0];
   if (!existing) {
     const created = await prisma.shift.create({
       data: {
-        name: input.shiftName,
-        startTime: input.shiftStartTime,
-        endTime: input.shiftEndTime,
-        crossesMidnight: input.crossesMidnight,
-        gracePeriodMinutes: input.shiftGraceMinutes,
+        name: spec.name,
+        startTime: spec.startTime,
+        endTime: spec.endTime,
+        crossesMidnight: spec.crossesMidnight,
+        gracePeriodMinutes: spec.graceMinutes,
       },
     });
     console.log(
@@ -243,13 +259,13 @@ async function ensureShift(prisma: PrismaClient, input: BootstrapInput) {
   }
 
   if (
-    existing.startTime !== input.shiftStartTime ||
-    existing.endTime !== input.shiftEndTime ||
-    existing.crossesMidnight !== input.crossesMidnight ||
-    existing.gracePeriodMinutes !== input.shiftGraceMinutes
+    existing.startTime !== spec.startTime ||
+    existing.endTime !== spec.endTime ||
+    existing.crossesMidnight !== spec.crossesMidnight ||
+    existing.gracePeriodMinutes !== spec.graceMinutes
   ) {
     conflict(
-      `Conflict: shift ${JSON.stringify(input.shiftName)} already exists with different schedule or grace settings. Refusing to change existing records.`
+      `Conflict: shift ${JSON.stringify(spec.name)} already exists with different schedule or grace settings. Refusing to change existing records.`
     );
   }
   console.log(`Shift ${existing.name} already exists — unchanged.`);
@@ -405,7 +421,9 @@ async function ensureTerminal(prisma: PrismaClient, input: BootstrapInput, proje
 
 export async function bootstrapProduction(prisma: PrismaClient, input: BootstrapInput): Promise<void> {
   const project = await ensureProject(prisma, input);
-  await ensureShift(prisma, input);
+  for (const spec of input.shifts) {
+    await ensureShift(prisma, spec);
+  }
   await ensureAdmin(prisma, input, project.id);
   await ensureTerminal(prisma, input, project.id);
 }

@@ -27,10 +27,14 @@ function validEnv(overrides: Record<string, string> = {}): Record<string, string
     PROD_PROJECT_LATITUDE: '24.7136',
     PROD_PROJECT_LONGITUDE: '46.6753',
     PROD_PROJECT_RADIUS_METERS: '150',
-    PROD_SHIFT_NAME: 'Night Shift',
-    PROD_SHIFT_START_TIME: '18:00',
-    PROD_SHIFT_END_TIME: '06:00',
-    PROD_SHIFT_GRACE_MINUTES: '5',
+    PROD_SHIFT_1_NAME: 'Night Shift 1',
+    PROD_SHIFT_1_START_TIME: '15:30',
+    PROD_SHIFT_1_END_TIME: '03:30',
+    PROD_SHIFT_1_GRACE_MINUTES: '5',
+    PROD_SHIFT_2_NAME: 'Night Shift 2',
+    PROD_SHIFT_2_START_TIME: '19:30',
+    PROD_SHIFT_2_END_TIME: '07:30',
+    PROD_SHIFT_2_GRACE_MINUTES: '5',
     PROD_TERMINAL_NAME: 'Gate Tablet',
     PROD_TERMINAL_SLUG: 'riyadh-gate',
     ...overrides,
@@ -50,17 +54,20 @@ describe('production bootstrap guards and validation', () => {
     assert.doesNotThrow(() => assertBootstrapAllowed('production', undefined));
   });
 
-  it('parses a night shift 18:00 → 06:00 as crossing midnight', () => {
-    assert.equal(parseHHMM('18:00', 'PROD_SHIFT_START_TIME'), '18:00');
-    assert.equal(parseHHMM('06:00', 'PROD_SHIFT_END_TIME'), '06:00');
-    assert.equal(computeCrossesMidnight('18:00', '06:00'), true);
+  it('parses both production night shifts as crossing midnight', () => {
+    assert.equal(parseHHMM('15:30', 'PROD_SHIFT_1_START_TIME'), '15:30');
+    assert.equal(parseHHMM('03:30', 'PROD_SHIFT_1_END_TIME'), '03:30');
+    assert.equal(computeCrossesMidnight('15:30', '03:30'), true);
+    assert.equal(parseHHMM('19:30', 'PROD_SHIFT_2_START_TIME'), '19:30');
+    assert.equal(parseHHMM('07:30', 'PROD_SHIFT_2_END_TIME'), '07:30');
+    assert.equal(computeCrossesMidnight('19:30', '07:30'), true);
     assert.equal(computeCrossesMidnight('08:00', '17:00'), false);
   });
 
   it('rejects invalid HH:mm values', () => {
-    assert.throws(() => parseHHMM('25:00', 'PROD_SHIFT_START_TIME'), BootstrapError);
-    assert.throws(() => parseHHMM('18', 'PROD_SHIFT_START_TIME'), BootstrapError);
-    assert.throws(() => parseHHMM('18:0', 'PROD_SHIFT_START_TIME'), BootstrapError);
+    assert.throws(() => parseHHMM('25:00', 'PROD_SHIFT_1_START_TIME'), BootstrapError);
+    assert.throws(() => parseHHMM('18', 'PROD_SHIFT_1_START_TIME'), BootstrapError);
+    assert.throws(() => parseHHMM('18:0', 'PROD_SHIFT_1_START_TIME'), BootstrapError);
   });
 
   it('validates coordinates and radius', () => {
@@ -82,12 +89,32 @@ describe('production bootstrap guards and validation', () => {
     assert.throws(() => parseTerminalSlug('Riyadh Gate'), BootstrapError);
   });
 
-  it('reads required env without exposing the password on the returned object shape', () => {
+  it('reads both night shifts from env without using a single PROD_SHIFT_* set', () => {
     const input = readBootstrapInput(validEnv());
     assert.equal(input.adminUsername, 'ops-admin');
-    assert.equal(input.crossesMidnight, true);
     assert.equal(input.terminalSlug, 'riyadh-gate');
+    assert.equal(input.shifts.length, 2);
+    assert.equal(input.shifts[0].name, 'Night Shift 1');
+    assert.equal(input.shifts[0].startTime, '15:30');
+    assert.equal(input.shifts[0].endTime, '03:30');
+    assert.equal(input.shifts[0].crossesMidnight, true);
+    assert.equal(input.shifts[1].name, 'Night Shift 2');
+    assert.equal(input.shifts[1].startTime, '19:30');
+    assert.equal(input.shifts[1].endTime, '07:30');
+    assert.equal(input.shifts[1].crossesMidnight, true);
     assert.ok('adminPassword' in input);
     assert.notEqual(input.adminPassword, 'admin123');
+  });
+
+  it('rejects duplicate shift names', () => {
+    assert.throws(
+      () =>
+        readBootstrapInput(
+          validEnv({
+            PROD_SHIFT_2_NAME: 'Night Shift 1',
+          })
+        ),
+      (err: unknown) => err instanceof BootstrapError && /must be different/.test(err.message)
+    );
   });
 });
