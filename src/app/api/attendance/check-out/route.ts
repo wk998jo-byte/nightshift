@@ -4,6 +4,7 @@ import { prisma } from '@/lib/db';
 import { isInsideRadius } from '@/lib/geo';
 import { calculateAttendance } from '@/lib/attendance-calc';
 import { fingerprintFromRequest, hashToken, verifyQrToken } from '@/lib/security';
+import { observePunchDevice, recordDeviceWarnings } from '@/lib/device-security';
 import { AttendanceMethod } from '@prisma/client';
 
 export async function POST(req: NextRequest) {
@@ -41,7 +42,7 @@ export async function POST(req: NextRequest) {
       checkInAt: { not: null },
       checkOutAt: null,
     },
-    include: { shift: true, project: true, employee: true },
+    include: { shift: true, project: true, employee: { include: { user: { select: { role: true, isActive: true } } } } },
   });
   if (!open) {
     return NextResponse.json({ error: 'No open shift to end' }, { status: 404 });
@@ -83,16 +84,14 @@ export async function POST(req: NextRequest) {
   const ua = req.headers.get('user-agent');
   const ip = req.headers.get('x-forwarded-for');
   const fingerprint = fingerprintFromRequest(ua, body.deviceId);
-  let device = await prisma.device.findFirst({ where: { deviceFingerprint: fingerprint } });
-  if (!device) {
-    device = await prisma.device.create({
-      data: {
-        employeeId: auth.employeeId,
-        deviceFingerprint: fingerprint,
-        userAgent: ua,
-      },
-    });
-  }
+  const employee = open.employee;
+  const observed = await observePunchDevice(prisma, {
+    employee,
+    fingerprint,
+    userAgent: ua,
+    now,
+  });
+  const device = observed.device;
 
   const updated = await prisma.attendanceRecord.update({
     where: { id: open.id },
@@ -123,9 +122,19 @@ export async function POST(req: NextRequest) {
       checkOutAt: now,
       workedMinutes: calc.workedMinutes,
       overtimeMinutes: calc.overtimeMinutes,
+      displayDeviceId: observed.displayDeviceId,
     },
     ip,
     userAgent: ua,
+  });
+  await recordDeviceWarnings(writeAudit, {
+    actorId: auth.sub,
+    attendanceId: updated.id,
+    ip,
+    userAgent: ua,
+    observed,
+    employee,
+    operation: 'check-out',
   });
 
   return NextResponse.json({

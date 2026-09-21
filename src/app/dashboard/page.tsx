@@ -8,6 +8,10 @@ import { shortName } from '@/lib/employee-identity';
 import { canManageSchedule } from '@/lib/shift-catalog';
 import { filterBoardRows } from '@/lib/dashboard-board';
 import ShiftScheduleTab from './shift-schedule-tab';
+import AttendanceDetailsDrawer, {
+  type AttendanceDetailsPayload,
+} from './attendance-details-drawer';
+import { auditActionLabel, auditActionTone } from '@/lib/attendance-details';
 
 type Summary = {
   scheduled: number;
@@ -67,6 +71,7 @@ type Audit = {
   employeeId: string | null;
   actor: { username: string; role: string } | null;
   newValue: string | null;
+  ip?: string | null;
 };
 
 function fmt(mins: number | null) {
@@ -123,6 +128,10 @@ export default function DashboardPage() {
   const [now, setNow] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState('');
   const [qrTerminal, setQrTerminal] = useState<{ slug: string; name: string } | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [detailsLoading, setDetailsLoading] = useState(false);
+  const [detailsError, setDetailsError] = useState('');
+  const [details, setDetails] = useState<AttendanceDetailsPayload | null>(null);
 
   const loadTonight = useCallback(async () => {
     const qs = selectedDate ? `?date=${selectedDate}` : '';
@@ -181,6 +190,22 @@ export default function DashboardPage() {
   async function logout() {
     await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
     router.replace('/login');
+  }
+
+  async function openDetails(id: string) {
+    if (!id || id.startsWith('absent:')) return;
+    setDetailsOpen(true);
+    setDetailsLoading(true);
+    setDetailsError('');
+    setDetails(null);
+    const res = await fetch(`/api/attendance/${id}/details`, { credentials: 'include' });
+    const json = await res.json().catch(() => ({}));
+    setDetailsLoading(false);
+    if (!res.ok) {
+      setDetailsError(json.error || 'Could not load details');
+      return;
+    }
+    setDetails(json.details);
   }
 
   async function manualCheckIn() {
@@ -404,6 +429,7 @@ export default function DashboardPage() {
                         <th className="pb-3 pr-2 font-semibold">Late</th>
                         <th className="pb-3 pr-2 font-semibold">OT</th>
                         <th className="pb-3 font-semibold">Status</th>
+                        <th className="pb-3 font-semibold">Details</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -454,6 +480,18 @@ export default function DashboardPage() {
                             <StatusChip tone={toneFor(r.statusPrimary)}>
                               {r.statusPrimary}
                             </StatusChip>
+                          </td>
+                          <td className="py-3.5">
+                            {r.virtualAbsent ? (
+                              <span className="text-xs text-slate-400">—</span>
+                            ) : (
+                              <button
+                                className="text-xs font-semibold text-[#C8102E]"
+                                onClick={() => void openDetails(r.id)}
+                              >
+                                View Details
+                              </button>
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -586,32 +624,61 @@ export default function DashboardPage() {
             <h2 className="mb-2 text-lg font-bold text-slate-900">Audit log</h2>
             <p className="mb-4 text-sm text-slate-500">Read-only security trail — not deletable.</p>
             {audits.length === 0 ? (
-              <p className="text-sm text-slate-500">
-                No audit entries visible (Admin/HR only) or still empty.
-              </p>
+              <p className="text-sm text-slate-500">No audit entries yet.</p>
             ) : (
               <div className="space-y-2">
-                {audits.map((a) => (
-                  <div
-                    key={a.id}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50/80 px-3 py-2.5 text-sm"
-                  >
-                    <div>
-                      <p className="font-semibold text-slate-900">{a.action}</p>
+                {audits.map((a) => {
+                  let extra = '';
+                  try {
+                    const parsed = a.newValue ? (JSON.parse(a.newValue) as Record<string, unknown>) : null;
+                    if (parsed) {
+                      const bits = [
+                        parsed.employeeName || parsed.employeeCode,
+                        parsed.displayDeviceId,
+                        parsed.deviceType,
+                        parsed.ip,
+                        parsed.previousEmployeeName
+                          ? `prev ${parsed.previousEmployeeName}`
+                          : null,
+                      ].filter(Boolean);
+                      extra = bits.join(' · ');
+                    }
+                  } catch {
+                    extra = '';
+                  }
+                  return (
+                    <div
+                      key={a.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-100 bg-slate-50/80 px-3 py-2.5 text-sm"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-semibold text-slate-900">{auditActionLabel(a.action)}</p>
+                          <StatusChip tone={auditActionTone(a.action)}>{a.action}</StatusChip>
+                        </div>
+                        <p className="text-xs text-slate-500">
+                          {a.actor?.username || 'system'} · {a.actor?.role || '—'}
+                          {extra ? ` · ${extra}` : ''}
+                        </p>
+                      </div>
                       <p className="text-xs text-slate-500">
-                        {a.actor?.username || 'system'} · {a.actor?.role || '—'}
+                        {new Date(a.createdAt).toLocaleString()}
                       </p>
                     </div>
-                    <p className="text-xs text-slate-500">
-                      {new Date(a.createdAt).toLocaleString()}
-                    </p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </Surface>
         ) : null}
       </div>
+      <AttendanceDetailsDrawer
+        open={detailsOpen}
+        loading={detailsLoading}
+        error={detailsError}
+        details={details}
+        onClose={() => setDetailsOpen(false)}
+      />
     </main>
   );
 }

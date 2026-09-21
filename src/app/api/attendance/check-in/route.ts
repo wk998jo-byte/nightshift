@@ -7,6 +7,7 @@ import { getTonightAssignment } from '@/lib/schedule';
 import { checkInDeniedReason } from '@/lib/schedule-lookup';
 import { getShiftTiming } from '@/lib/schedule-timing';
 import { fingerprintFromRequest, hashToken, verifyQrToken } from '@/lib/security';
+import { observePunchDevice, recordDeviceWarnings } from '@/lib/device-security';
 import { AttendanceMethod } from '@prisma/client';
 
 type Body = {
@@ -87,7 +88,10 @@ export async function POST(req: NextRequest) {
     { error: string }
   >;
 
-  const employee = await prisma.employee.findUnique({ where: { id: auth.employeeId } });
+  const employee = await prisma.employee.findUnique({
+    where: { id: auth.employeeId },
+    include: { user: { select: { role: true, isActive: true } } },
+  });
   if (!employee || !employee.isActive) {
     return NextResponse.json({ error: 'Employee inactive' }, { status: 403 });
   }
@@ -148,38 +152,13 @@ export async function POST(req: NextRequest) {
     calc.statusPrimary = 'ON_TIME';
   }
 
-  let device = await prisma.device.findFirst({
-    where: { deviceFingerprint: fingerprint },
+  const observed = await observePunchDevice(prisma, {
+    employee,
+    fingerprint,
+    userAgent: ua,
+    now,
   });
-  if (!device) {
-    device = await prisma.device.create({
-      data: {
-        employeeId: employee.id,
-        deviceFingerprint: fingerprint,
-        userAgent: ua,
-      },
-    });
-  } else if (device.employeeId && device.employeeId !== employee.id) {
-    await prisma.device.update({
-      where: { id: device.id },
-      data: { flagged: true, lastSeenAt: now },
-    });
-    await writeAudit({
-      actorId: auth.sub,
-      action: 'SECURITY_DEVICE_MULTI_ACCOUNT',
-      entityType: 'Device',
-      entityId: device.id,
-      employeeId: employee.id,
-      newValue: { previousEmployeeId: device.employeeId },
-      ip,
-      userAgent: ua,
-    });
-  } else {
-    await prisma.device.update({
-      where: { id: device.id },
-      data: { employeeId: employee.id, lastSeenAt: now },
-    });
-  }
+  const device = observed.device;
 
   const record = await prisma.attendanceRecord.create({
     data: {
@@ -213,9 +192,19 @@ export async function POST(req: NextRequest) {
       projectId: project.id,
       lateMinutes: calc.lateMinutes,
       timing: timingAtPunch.phase,
+      displayDeviceId: observed.displayDeviceId,
     },
     ip,
     userAgent: ua,
+  });
+  await recordDeviceWarnings(writeAudit, {
+    actorId: auth.sub,
+    attendanceId: record.id,
+    ip,
+    userAgent: ua,
+    observed,
+    employee,
+    operation: 'check-in',
   });
 
   let message = 'تم تسجيل حضورك بنجاح';

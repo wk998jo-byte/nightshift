@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { BrandButton, EmployeeAvatar, Logo, StatusChip, Surface } from '@/components/ui';
 import { lateMinutesAfterGrace } from '@/lib/attendance-calc';
+import { getBrowserDeviceId } from '@/lib/browser-device-id';
 import { startQrScanner, stopMediaStream, type BarcodeDetectorLike } from '@/lib/qr-scanner';
 
 type Timing = {
@@ -206,7 +207,7 @@ export default function EmployeeAppPage() {
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, ...gps }),
+        body: JSON.stringify({ token, ...gps, deviceId: getBrowserDeviceId() }),
       });
       const json = await res.json();
       if (!res.ok) {
