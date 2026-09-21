@@ -48,17 +48,23 @@ async function main() {
   run('npx prisma generate');
   run('npx prisma migrate deploy');
 
-  const { PrismaClient } = await import('@prisma/client');
-  const prisma = new PrismaClient();
-  try {
-    const count = await prisma.user.count();
-    if (count === 0) {
-      run('npx tsx prisma/seed.ts');
-    } else {
-      console.log(`Database already has ${count} users — seed skipped.`);
+  const isProduction = process.env.NODE_ENV === 'production';
+  if (isProduction) {
+    console.log('Production environment detected — demo seed skipped.');
+    console.log('Bootstrap production data separately with: npm run bootstrap:production');
+  } else {
+    const { PrismaClient } = await import('@prisma/client');
+    const prisma = new PrismaClient();
+    try {
+      const count = await prisma.user.count();
+      if (count === 0) {
+        run('npx tsx prisma/seed.ts');
+      } else {
+        console.log(`Database already has ${count} users — seed skipped.`);
+      }
+    } finally {
+      await prisma.$disconnect();
     }
-  } finally {
-    await prisma.$disconnect();
   }
 
   if (!existsSync('public/bin-quraya-logo-clear.png') && existsSync('public/bin-quraya-logo.png')) {

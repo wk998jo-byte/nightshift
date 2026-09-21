@@ -28,6 +28,13 @@ const DEMO_CREW = [
 ] as const;
 
 async function main() {
+  if (process.env.NODE_ENV === 'production') {
+    console.error(
+      'Demo seed is disabled in production. Use npm run bootstrap:production on the production database.'
+    );
+    process.exit(1);
+  }
+
   const existingUsers = await prisma.user.count();
   const resetDemo = process.env.RESET_DEMO === '1';
 
