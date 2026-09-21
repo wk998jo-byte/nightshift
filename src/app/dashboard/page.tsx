@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { BrandButton, EmployeeAvatar, Logo, StatCard, StatusChip, Surface } from '@/components/ui';
 import { shortName } from '@/lib/employee-identity';
 import { canManageSchedule } from '@/lib/shift-catalog';
+import { filterBoardRows } from '@/lib/dashboard-board';
 import ShiftScheduleTab from './shift-schedule-tab';
 
 type Summary = {
@@ -23,12 +24,17 @@ type RecordRow = {
   employeeName: string;
   employeeCode: string;
   project: string;
+  projectLocation?: string | null;
+  shiftLabel?: string;
+  shiftKey?: 'SHIFT_1' | 'SHIFT_2' | null;
+  scheduledStart?: string | null;
   checkInAt: string | null;
   checkOutAt: string | null;
   workedMinutes: number | null;
   lateMinutes: number;
   overtimeMinutes: number;
   statusPrimary: string;
+  virtualAbsent?: boolean;
 };
 
 type Emp = {
@@ -91,31 +97,43 @@ export default function DashboardPage() {
   const [records, setRecords] = useState<RecordRow[]>([]);
   const [working, setWorking] = useState<
     Array<{
+      id: string;
       name: string;
       code: string;
+      badge?: string;
       project: string;
+      shiftLabel?: string;
       checkInAt: string;
       currentWorkedMinutes: number;
       lateMinutes: number;
     }>
   >([]);
   const [employees, setEmployees] = useState<Emp[]>([]);
+  const [activeEmployees, setActiveEmployees] = useState<
+    Array<{ id: string; fullName: string; employeeCode: string; badgeNumber: string }>
+  >([]);
   const [projects, setProjects] = useState<Proj[]>([]);
   const [audits, setAudits] = useState<Audit[]>([]);
   const [q, setQ] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
-  const [manualEmp, setManualEmp] = useState('EMP-0147');
+  const [shiftFilter, setShiftFilter] = useState('ALL');
+  const [manualEmpId, setManualEmpId] = useState('');
   const [manualReason, setManualReason] = useState('Employee phone unavailable');
   const [msg, setMsg] = useState('');
   const [now, setNow] = useState(new Date());
+  const [selectedDate, setSelectedDate] = useState('');
+  const [qrTerminal, setQrTerminal] = useState<{ slug: string; name: string } | null>(null);
 
   const loadTonight = useCallback(async () => {
-    const data = await fetch('/api/dashboard/tonight').then((r) => r.json());
+    const qs = selectedDate ? `?date=${selectedDate}` : '';
+    const data = await fetch(`/api/dashboard/tonight${qs}`).then((r) => r.json());
     setWorkDate(data.workDate);
     setSummary(data.summary);
-    setRecords(data.records);
-    setWorking(data.currentlyWorking);
-  }, []);
+    setRecords(data.records || []);
+    setWorking(data.currentlyWorking || []);
+    setQrTerminal(data.qrTerminal || null);
+    if (data.activeEmployees) setActiveEmployees(data.activeEmployees);
+  }, [selectedDate]);
 
   const boot = useCallback(async () => {
     const me = await fetch('/api/auth/me', { credentials: 'include' }).then((r) => r.json());
@@ -167,10 +185,8 @@ export default function DashboardPage() {
 
   async function manualCheckIn() {
     setMsg('');
-    const lookup = await fetch(`/api/employees?code=${encodeURIComponent(manualEmp.trim())}`);
-    const empJson = await lookup.json();
-    if (!empJson.employee?.id) {
-      setMsg('Employee not found');
+    if (!manualEmpId) {
+      setMsg('Select an employee');
       return;
     }
     const res = await fetch('/api/attendance/manual', {
@@ -178,7 +194,7 @@ export default function DashboardPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         action: 'check-in',
-        employeeId: empJson.employee.id,
+        employeeId: manualEmpId,
         reason: manualReason,
       }),
     });
@@ -207,14 +223,7 @@ export default function DashboardPage() {
     if (res.ok) void loadTonight();
   }
 
-  const filtered = records.filter((r) => {
-    const matchQ =
-      !q ||
-      r.employeeName.toLowerCase().includes(q.toLowerCase()) ||
-      r.employeeCode.toLowerCase().includes(q.toLowerCase());
-    const matchS = statusFilter === 'ALL' || r.statusPrimary === statusFilter;
-    return matchQ && matchS;
-  });
+  const filtered = filterBoardRows(records, { q, status: statusFilter, shift: shiftFilter });
 
   const nav: Array<[typeof section, string]> = [
     ['tonight', 'Tonight'],
@@ -239,12 +248,14 @@ export default function DashboardPage() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            <Link
-              href="/terminal/bin-quraya-dhahran"
-              className="rounded-xl bg-slate-100 px-3 py-2 font-medium text-slate-700 hover:bg-slate-200"
-            >
-              QR Terminal
-            </Link>
+            {qrTerminal ? (
+              <Link
+                href={`/terminal/${qrTerminal.slug}`}
+                className="rounded-xl bg-slate-100 px-3 py-2 font-medium text-slate-700 hover:bg-slate-200"
+              >
+                QR Terminal
+              </Link>
+            ) : null}
             <a
               href={`/api/exports/attendance?date=${workDate}`}
               className="rounded-xl bg-slate-100 px-3 py-2 font-medium text-slate-700 hover:bg-slate-200"
@@ -281,6 +292,14 @@ export default function DashboardPage() {
                 Tonight&apos;s Shift
               </p>
               <h2 className="mb-3 text-xl font-bold text-slate-900">Live operations</h2>
+              <div className="mb-3">
+                <input
+                  type="date"
+                  value={selectedDate || workDate}
+                  onChange={(e) => setSelectedDate(e.target.value)}
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
+                />
+              </div>
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-7">
                 <StatCard label="Scheduled" value={summary?.scheduled ?? '—'} tone="info" />
                 <StatCard label="Present" value={summary?.present ?? '—'} tone="ok" />
@@ -304,17 +323,17 @@ export default function DashboardPage() {
                   ) : (
                 working.map((w) => (
                   <div
-                    key={w.code}
+                    key={w.id}
                     className="rounded-2xl border border-slate-100 bg-gradient-to-br from-slate-50 to-white p-3"
                   >
                     <div className="flex items-start gap-3">
-                      <EmployeeAvatar name={w.name} badge={w.code} size="sm" />
+                      <EmployeeAvatar name={w.name} badge={w.badge || w.code} size="sm" />
                       <div className="min-w-0 flex-1">
                         <div className="flex items-start justify-between gap-2">
                           <div>
                             <p className="font-semibold text-slate-900">{shortName(w.name)}</p>
                             <p className="text-xs text-slate-500">
-                              BN# {w.code} · {w.project}
+                              BN# {w.badge || w.code} · {w.shiftLabel || 'Shift'} · {w.project}
                             </p>
                           </div>
                           {w.lateMinutes > 0 ? (
@@ -352,12 +371,23 @@ export default function DashboardPage() {
                       onChange={(e) => setStatusFilter(e.target.value)}
                       className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
                     >
-                      <option value="ALL">All statuses</option>
+                      <option value="ALL">All</option>
                       <option value="WORKING">Working</option>
+                      <option value="ON_TIME">On Time</option>
                       <option value="LATE">Late</option>
-                      <option value="ON_TIME">On time</option>
+                      <option value="EARLY_DEPARTURE">Early Departure</option>
                       <option value="OVERTIME">Overtime</option>
-                      <option value="MISSING_CHECKOUT">Missing checkout</option>
+                      <option value="MISSING_CHECKOUT">Missing Checkout</option>
+                      <option value="ABSENT">Absent</option>
+                    </select>
+                    <select
+                      value={shiftFilter}
+                      onChange={(e) => setShiftFilter(e.target.value)}
+                      className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
+                    >
+                      <option value="ALL">All Shifts</option>
+                      <option value="SHIFT_1">Shift 1</option>
+                      <option value="SHIFT_2">Shift 2</option>
                     </select>
                   </div>
                 </div>
@@ -366,6 +396,7 @@ export default function DashboardPage() {
                     <thead>
                       <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
                         <th className="pb-3 pr-2 font-semibold">Employee</th>
+                        <th className="pb-3 pr-2 font-semibold">Shift</th>
                         <th className="pb-3 pr-2 font-semibold">Project</th>
                         <th className="pb-3 pr-2 font-semibold">In</th>
                         <th className="pb-3 pr-2 font-semibold">Out</th>
@@ -395,11 +426,19 @@ export default function DashboardPage() {
                           </div>
                         </div>
                       </td>
-                          <td className="py-3.5 pr-2 text-slate-600">{r.project}</td>
-                          <td className="py-3.5 pr-2">{fmtTime(r.checkInAt)}</td>
+                          <td className="py-3.5 pr-2 whitespace-pre-line text-xs font-semibold text-slate-700">
+                            {r.shiftLabel || '—'}
+                          </td>
+                          <td className="py-3.5 pr-2 text-slate-600">
+                            {r.project}
+                            {r.projectLocation ? (
+                              <span className="mt-0.5 block text-xs text-slate-400">{r.projectLocation}</span>
+                            ) : null}
+                          </td>
+                          <td className="py-3.5 pr-2">{r.checkInAt ? fmtTime(r.checkInAt) : '—'}</td>
                           <td className="py-3.5 pr-2">
-                            {fmtTime(r.checkOutAt)}
-                            {r.checkInAt && !r.checkOutAt ? (
+                            {r.checkOutAt ? fmtTime(r.checkOutAt) : '—'}
+                            {r.checkInAt && !r.checkOutAt && !r.virtualAbsent ? (
                               <button
                                 className="ml-2 text-xs font-semibold text-[#C8102E]"
                                 onClick={() => void manualCheckOutFor(r.employeeCode, r.id)}
@@ -408,9 +447,9 @@ export default function DashboardPage() {
                               </button>
                             ) : null}
                           </td>
-                          <td className="py-3.5 pr-2 font-medium">{fmt(r.workedMinutes)}</td>
-                          <td className="py-3.5 pr-2">{r.lateMinutes}m</td>
-                          <td className="py-3.5 pr-2">{r.overtimeMinutes}m</td>
+                          <td className="py-3.5 pr-2 font-medium">{r.workedMinutes == null ? '—' : fmt(r.workedMinutes)}</td>
+                          <td className="py-3.5 pr-2">{r.statusPrimary === 'ABSENT' ? '—' : `${r.lateMinutes}m`}</td>
+                          <td className="py-3.5 pr-2">{r.statusPrimary === 'ABSENT' ? '—' : `${r.overtimeMinutes}m`}</td>
                           <td className="py-3.5">
                             <StatusChip tone={toneFor(r.statusPrimary)}>
                               {r.statusPrimary}
@@ -433,18 +472,24 @@ export default function DashboardPage() {
                 Exceptional cases only — reason stored in Audit Log.
               </p>
               <div className="mt-4 flex flex-wrap gap-2">
-                <input
-                  className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
-                  placeholder="Employee ID"
-                  value={manualEmp}
-                  onChange={(e) => setManualEmp(e.target.value)}
-                />
+                <select
+                  className="min-w-[260px] rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
+                  value={manualEmpId}
+                  onChange={(e) => setManualEmpId(e.target.value)}
+                >
+                  <option value="">Select employee</option>
+                  {activeEmployees.map((e) => (
+                    <option key={e.id} value={e.id}>
+                      {e.fullName} — BN#{e.badgeNumber || e.employeeCode}
+                    </option>
+                  ))}
+                </select>
                 <input
                   className="min-w-[220px] flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
                   value={manualReason}
                   onChange={(e) => setManualReason(e.target.value)}
                 />
-                <BrandButton onClick={() => void manualCheckIn()}>Save manual check-in</BrandButton>
+                <BrandButton onClick={() => void manualCheckIn()}>Manual Check-in</BrandButton>
               </div>
               {msg ? <p className="mt-3 text-sm text-slate-700">{msg}</p> : null}
             </Surface>
@@ -482,7 +527,10 @@ export default function DashboardPage() {
                       </div>
                       <p className="mt-2 text-sm text-slate-700">{e.position || '—'}</p>
                       <p className="mt-1 text-xs text-slate-500">
-                        {e.department || '—'} · Login: {e.user?.username || '—'}
+                        {e.defaultProject?.name || '—'}
+                        {e.department ? ` · ${e.department}` : ''}
+                        {' · Login: '}
+                        {e.user?.username || '—'}
                       </p>
                     </div>
                   </div>
@@ -520,9 +568,9 @@ export default function DashboardPage() {
                     <p className="text-[11px] text-slate-500">Records</p>
                   </div>
                 </div>
-                {p.terminals[0] ? (
+                {p.terminals.find((t) => t.isActive) ? (
                   <Link
-                    href={`/terminal/${p.terminals[0].slug}`}
+                    href={`/terminal/${p.terminals.find((t) => t.isActive)!.slug}`}
                     className="mt-4 inline-flex text-sm font-semibold text-[#C8102E]"
                   >
                     Open QR Terminal →

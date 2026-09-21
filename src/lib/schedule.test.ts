@@ -233,6 +233,45 @@ describe('saveScheduleItems', () => {
     assert.equal(db.assignments[0].shiftId, 's1');
   });
 
+  it('saves a week of mixed shifts without duplicating assignments', async () => {
+    const db = createFakeDb({});
+    const dates = weekDates('2026-09-21');
+    const choices = ['SHIFT_1', 'SHIFT_2', 'OFF', 'SHIFT_1', 'SHIFT_2', 'OFF', 'SHIFT_1'] as const;
+    const result = await saveScheduleItems(db, {
+      actorId: 'admin-1',
+      items: dates.map((workDate, i) => ({ employeeId: 'emp-1', workDate, choice: choices[i] })),
+      writeAudit: async () => undefined,
+    });
+    assert.equal(result.saved, 7);
+    assert.equal(result.errors.length, 0);
+    assert.equal(db.assignments.length, 7);
+    const again = await saveScheduleItems(db, {
+      actorId: 'admin-1',
+      items: dates.map((workDate, i) => ({ employeeId: 'emp-1', workDate, choice: choices[i] })),
+      writeAudit: async () => undefined,
+    });
+    assert.equal(again.saved, 0);
+    assert.equal(db.assignments.length, 7);
+  });
+
+  it('saves a month range by updating the same employee/date row', async () => {
+    const db = createFakeDb({});
+    const first = await saveScheduleItems(db, {
+      actorId: 'admin-1',
+      items: [{ employeeId: 'emp-1', workDate: '2026-09-22', choice: 'SHIFT_1' }],
+      writeAudit: async () => undefined,
+    });
+    const second = await saveScheduleItems(db, {
+      actorId: 'admin-1',
+      items: [{ employeeId: 'emp-1', workDate: '2026-09-22', choice: 'OFF' }],
+      writeAudit: async () => undefined,
+    });
+    assert.equal(first.saved, 1);
+    assert.equal(second.saved, 1);
+    assert.equal(db.assignments.length, 1);
+    assert.equal(db.assignments[0].status, 'OFF');
+  });
+
   it('writes audit for schedule create and update', async () => {
     const db = createFakeDb({});
     const audits: string[] = [];

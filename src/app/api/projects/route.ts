@@ -12,7 +12,7 @@ export async function GET() {
   const projects = await prisma.project.findMany({
     orderBy: { name: 'asc' },
     include: {
-      terminals: true,
+      terminals: { where: { isActive: true }, orderBy: { createdAt: 'asc' } },
       _count: { select: { assignments: true, attendance: true } },
     },
   });

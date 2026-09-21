@@ -8,7 +8,13 @@ import {
   type ShiftChoice,
 } from '@/lib/shift-catalog';
 import {
+  datesAfterWeekUntilMonthEnd,
   loadShiftCatalog,
+  monthDates,
+  monthEnd,
+  monthStart,
+  planPatternCopy,
+  previousWeekStart,
   saveScheduleItems,
   weekDates,
   weekStart,
@@ -32,7 +38,7 @@ export async function GET(req: NextRequest) {
   let span = 0;
   for (let d = start; d <= end; d = addCalendarDays(d, 1)) {
     span += 1;
-    if (span > 14) {
+    if (span > 31) {
       return NextResponse.json({ error: 'Date range too large' }, { status: 400 });
     }
   }
@@ -67,6 +73,9 @@ export async function GET(req: NextRequest) {
     today,
     weekStart: weekStart(start),
     weekDates: weekDates(start),
+    monthStart: monthStart(start),
+    monthEnd: monthEnd(start),
+    monthDates: monthDates(start),
     shifts: {
       SHIFT_1: catalog.shift1
         ? {
@@ -128,4 +137,124 @@ export async function PUT(req: NextRequest) {
   }
 
   return NextResponse.json({ ok: result.errors.length === 0, ...result });
+}
+
+export async function POST(req: NextRequest) {
+  const auth = await getSession();
+  if (!auth) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!canManageSchedule(auth.role)) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  const body = await req.json().catch(() => ({}));
+  const action = String(body.action || '');
+  const overwriteExisting = body.overwriteExisting === true;
+  const anchor = String(body.weekStart || body.anchor || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(anchor)) {
+    return NextResponse.json({ error: 'weekStart required' }, { status: 400 });
+  }
+  if (action !== 'copy-previous-week' && action !== 'repeat-week-to-month-end') {
+    return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+  }
+
+  const catalog = await loadShiftCatalog(prisma);
+  const employees = await prisma.employee.findMany({
+    where: SHIFT_SCHEDULE_EMPLOYEE_WHERE,
+    select: { id: true, fullName: true },
+  });
+  const employeeIds = employees.map((e) => e.id);
+  const names = new Map(employees.map((e) => [e.id, e.fullName]));
+
+  const sourceDates =
+    action === 'copy-previous-week' ? weekDates(previousWeekStart(anchor)) : weekDates(anchor);
+  const targetDates =
+    action === 'copy-previous-week' ? weekDates(anchor) : datesAfterWeekUntilMonthEnd(anchor);
+
+  const rangeStart = [...sourceDates, ...targetDates].sort()[0];
+  const rangeEnd = [...sourceDates, ...targetDates].sort().reverse()[0];
+  const assignments = await prisma.employeeShiftAssignment.findMany({
+    where: {
+      employeeId: { in: employeeIds },
+      workDate: { gte: rangeStart, lte: rangeEnd },
+    },
+    include: { shift: true, attendance: { select: { checkInAt: true } } },
+  });
+
+  const sourceChoices = new Map<string, ShiftChoice>();
+  const existing = new Set<string>();
+  const locked = new Set<string>();
+  for (const a of assignments) {
+    const key = `${a.employeeId}:${a.workDate}`;
+    existing.add(key);
+    if (a.attendance.some((r) => r.checkInAt != null)) locked.add(key);
+    sourceChoices.set(key, choiceForAssignment(a.shift, a.status, catalog));
+  }
+
+  const plan = planPatternCopy({
+    employeeIds,
+    sourceDates,
+    targetDates,
+    sourceChoices,
+    existing,
+    locked,
+    today: calendarDateInAppZone(new Date()),
+    overwriteExisting,
+  });
+
+  if (plan.wouldOverwrite > 0 && !overwriteExisting) {
+    return NextResponse.json(
+      {
+        ok: false,
+        needsConfirmation: true,
+        message:
+          'Some future days already have a schedule. Confirm to replace them. Attendance-locked days will not change.',
+        ...plan,
+      },
+      { status: 409 }
+    );
+  }
+
+  if (plan.items.length === 0) {
+    return NextResponse.json({
+      ok: true,
+      saved: 0,
+      errors: [],
+      skippedLocked: plan.skippedLocked,
+      skippedPast: plan.skippedPast,
+      message: 'Nothing to copy.',
+    });
+  }
+
+  const result = await saveScheduleItems(prisma, {
+    actorId: auth.sub,
+    items: plan.items,
+    writeAudit,
+  });
+
+  await writeAudit({
+    actorId: auth.sub,
+    action: action === 'copy-previous-week' ? 'SCHEDULE_COPIED' : 'SCHEDULE_REPEATED',
+    entityType: 'EmployeeShiftAssignment',
+    newValue: {
+      action,
+      sourceDates,
+      targetDates,
+      saved: result.saved,
+      skippedLocked: plan.skippedLocked,
+      skippedPast: plan.skippedPast,
+    },
+  });
+
+  const errors = result.errors.map((e) => ({
+    ...e,
+    employeeName: e.employeeName || names.get(e.employeeId),
+  }));
+
+  return NextResponse.json({
+    ok: result.errors.length === 0,
+    ...result,
+    errors,
+    skippedLocked: plan.skippedLocked,
+    skippedPast: plan.skippedPast,
+  });
 }

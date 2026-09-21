@@ -35,6 +35,8 @@ export type ScheduleDb = {
       id: string;
       defaultProjectId: string | null;
       isActive: boolean;
+      fullName?: string;
+      employeeCode?: string;
     } | null>;
   };
   project: {
@@ -60,6 +62,103 @@ export function weekStart(anchorDate: string): string {
 export function weekDates(anchorDate: string): string[] {
   const start = DateTime.fromISO(weekStart(anchorDate), { zone: getAppTimezone() });
   return Array.from({ length: 7 }, (_, i) => start.plus({ days: i }).toFormat('yyyy-MM-dd'));
+}
+
+export function monthStart(anchorDate: string): string {
+  const dt = DateTime.fromISO(anchorDate, { zone: getAppTimezone() });
+  if (!dt.isValid) throw new Error(`Invalid date ${anchorDate}`);
+  return dt.startOf('month').toFormat('yyyy-MM-dd');
+}
+
+export function monthEnd(anchorDate: string): string {
+  const dt = DateTime.fromISO(anchorDate, { zone: getAppTimezone() });
+  if (!dt.isValid) throw new Error(`Invalid date ${anchorDate}`);
+  return dt.endOf('month').toFormat('yyyy-MM-dd');
+}
+
+export function monthDates(anchorDate: string): string[] {
+  const start = monthStart(anchorDate);
+  const end = monthEnd(anchorDate);
+  const dates: string[] = [];
+  for (let d = start; d <= end; d = addCalendarDays(d, 1)) dates.push(d);
+  return dates;
+}
+
+export type SaveItem = {
+  employeeId: string;
+  workDate: string;
+  choice: ShiftChoice;
+};
+
+export type CopyPlan = {
+  items: SaveItem[];
+  skippedLocked: number;
+  skippedPast: number;
+  skippedEmpty: number;
+  wouldOverwrite: number;
+};
+
+function cellKey(employeeId: string, workDate: string) {
+  return `${employeeId}:${workDate}`;
+}
+
+export function planPatternCopy(input: {
+  employeeIds: string[];
+  sourceDates: string[];
+  targetDates: string[];
+  sourceChoices: Map<string, ShiftChoice>;
+  existing: Set<string>;
+  locked: Set<string>;
+  today: string;
+  overwriteExisting: boolean;
+}): CopyPlan {
+  const items: SaveItem[] = [];
+  let skippedLocked = 0;
+  let skippedPast = 0;
+  let skippedEmpty = 0;
+  let wouldOverwrite = 0;
+  const sourceLen = input.sourceDates.length;
+  if (sourceLen === 0) return { items, skippedLocked, skippedPast, skippedEmpty, wouldOverwrite };
+
+  for (const employeeId of input.employeeIds) {
+    for (let i = 0; i < input.targetDates.length; i++) {
+      const target = input.targetDates[i];
+      const source = input.sourceDates[i % sourceLen];
+      const key = cellKey(employeeId, target);
+      const choice = input.sourceChoices.get(cellKey(employeeId, source));
+      if (!choice) {
+        skippedEmpty += 1;
+        continue;
+      }
+      if (target < input.today) {
+        skippedPast += 1;
+        continue;
+      }
+      if (input.locked.has(key)) {
+        skippedLocked += 1;
+        continue;
+      }
+      if (input.existing.has(key) && !input.overwriteExisting) {
+        wouldOverwrite += 1;
+        continue;
+      }
+      items.push({ employeeId, workDate: target, choice });
+    }
+  }
+  return { items, skippedLocked, skippedPast, skippedEmpty, wouldOverwrite };
+}
+
+export function previousWeekStart(anchorDate: string): string {
+  return addCalendarDays(weekStart(anchorDate), -7);
+}
+
+export function datesAfterWeekUntilMonthEnd(weekAnchor: string): string[] {
+  const week = weekDates(weekAnchor);
+  const last = week[week.length - 1];
+  const end = monthEnd(weekAnchor);
+  const extra: string[] = [];
+  for (let d = addCalendarDays(last, 1); d <= end; d = addCalendarDays(d, 1)) extra.push(d);
+  return extra;
 }
 
 export async function loadShiftCatalog(prisma: ScheduleDb): Promise<ShiftCatalog> {
@@ -99,12 +198,6 @@ export async function loadEmployeeSchedule(
 
 export { ATTENDANCE_BLOCKS_EDIT };
 
-export type SaveItem = {
-  employeeId: string;
-  workDate: string;
-  choice: ShiftChoice;
-};
-
 export async function saveScheduleItems(
   prisma: ScheduleDb,
   input: {
@@ -112,9 +205,12 @@ export async function saveScheduleItems(
     items: SaveItem[];
     writeAudit: AuditWriter;
   }
-): Promise<{ saved: number; errors: Array<{ employeeId: string; workDate: string; error: string }> }> {
+): Promise<{
+  saved: number;
+  errors: Array<{ employeeId: string; workDate: string; error: string; employeeName?: string }>;
+}> {
   const catalog = await loadShiftCatalog(prisma);
-  const errors: Array<{ employeeId: string; workDate: string; error: string }> = [];
+  const errors: Array<{ employeeId: string; workDate: string; error: string; employeeName?: string }> = [];
   let saved = 0;
   const audit = input.writeAudit;
 
@@ -130,7 +226,7 @@ export async function saveScheduleItems(
 
     const employee = await prisma.employee.findUnique({ where: { id: item.employeeId } });
     if (!employee || !employee.isActive) {
-      errors.push({ ...item, error: 'Employee not found' });
+      errors.push({ ...item, error: 'Employee not found', employeeName: employee?.fullName });
       continue;
     }
 
@@ -208,7 +304,11 @@ export async function saveScheduleItems(
       }));
 
     if (hasAttendance && (existing.shiftId !== shiftId || existing.status !== status)) {
-      errors.push({ ...item, error: ATTENDANCE_BLOCKS_EDIT });
+      errors.push({
+        ...item,
+        employeeName: employee.fullName,
+        error: ATTENDANCE_BLOCKS_EDIT,
+      });
       continue;
     }
 
