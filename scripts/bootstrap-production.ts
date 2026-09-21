@@ -532,9 +532,9 @@ export async function bootstrapProduction(prisma: PrismaClient, input: Bootstrap
   for (const spec of input.shifts) {
     await ensureShift(prisma, spec);
   }
-  await retireLegacyShift(prisma, input);
   await ensureAdmin(prisma, input, project.id);
   await ensureTerminal(prisma, input, project.id);
+  await retireLegacyShift(prisma, input);
 }
 
 function isExecutedDirectly(): boolean {
