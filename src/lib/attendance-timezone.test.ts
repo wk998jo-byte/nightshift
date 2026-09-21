@@ -6,6 +6,7 @@ import {
   resolveWorkDateForShift,
   parseTimeOnDate,
 } from './attendance-calc';
+import { getShiftTiming } from './schedule-timing';
 
 process.env.TZ = 'UTC';
 process.env.APP_TIMEZONE = 'Asia/Riyadh';
@@ -55,7 +56,7 @@ describe('Saudi night shift timezone (server TZ = UTC)', () => {
       checkOutAt: utc('2026-09-22T03:00:00.000Z'),
       gracePeriodMinutes: 5,
     });
-    assert.equal(result.lateMinutes, 15);
+    assert.equal(result.lateMinutes, 20);
     assert.equal(result.statusPrimary, 'LATE');
   });
 
@@ -95,4 +96,37 @@ describe('Saudi night shift timezone (server TZ = UTC)', () => {
     assert.equal(result.workedMinutes, 810);
     assert.equal(result.statusPrimary, 'OVERTIME');
   });
+});
+
+describe('grace period late minutes (15:30 start, 5 min grace)', () => {
+  const { scheduledStart, scheduledEnd } = scheduledWindow('2026-09-21', '15:30', '03:30', true);
+
+  function at(hhmm: string) {
+    return parseTimeOnDate('2026-09-21', hhmm);
+  }
+
+  function expectLate(hhmm: string, expected: number) {
+    const checkInAt = at(hhmm);
+    const calc = calculateAttendance({
+      scheduledStart,
+      scheduledEnd,
+      checkInAt,
+      checkOutAt: null,
+      gracePeriodMinutes: 5,
+    });
+    const timing = getShiftTiming(checkInAt, scheduledStart, scheduledEnd, 5);
+    assert.equal(calc.lateMinutes, expected);
+    assert.equal(timing.lateMinutes, expected);
+    if (expected === 0) {
+      assert.equal(timing.phase === 'late', false);
+    } else {
+      assert.equal(calc.statusPrimary, 'LATE');
+      assert.equal(timing.phase, 'late');
+    }
+  }
+
+  it('15:34 => 0 late', () => expectLate('15:34', 0));
+  it('15:35 => 0 late', () => expectLate('15:35', 0));
+  it('15:36 => 6 late', () => expectLate('15:36', 6));
+  it('15:48 => 18 late', () => expectLate('15:48', 18));
 });

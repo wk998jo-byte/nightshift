@@ -1,4 +1,4 @@
-import { diffMinutes, formatDuration } from './attendance-calc';
+import { diffMinutes, formatDuration, lateMinutesAfterGrace } from './attendance-calc';
 
 export type TimingPhase = 'early' | 'on_time' | 'late' | 'in_shift';
 
@@ -26,7 +26,7 @@ export function getShiftTiming(
   }
 
   const rawLate = Math.max(0, diffMinutes(now, scheduledStart));
-  const lateMinutes = Math.max(0, rawLate - gracePeriodMinutes);
+  const lateMinutes = lateMinutesAfterGrace(rawLate, gracePeriodMinutes);
 
   if (lateMinutes > 0) {
     return {

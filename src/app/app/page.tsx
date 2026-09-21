@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { BrandButton, EmployeeAvatar, Logo, StatusChip, Surface } from '@/components/ui';
+import { lateMinutesAfterGrace } from '@/lib/attendance-calc';
+import { startQrScanner, stopMediaStream, type BarcodeDetectorLike } from '@/lib/qr-scanner';
 
 type Timing = {
   phase: 'early' | 'on_time' | 'late' | 'in_shift';
@@ -104,6 +106,7 @@ export default function EmployeeAppPage() {
   const [gpsHint, setGpsHint] = useState('');
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const scanRef = useRef<{ stop: () => void } | null>(null);
 
   const load = useCallback(async () => {
     const res = await fetch('/api/me/today');
@@ -125,7 +128,12 @@ export default function EmployeeAppPage() {
   }, [load]);
 
   useEffect(() => {
-    return () => streamRef.current?.getTracks().forEach((t) => t.stop());
+    return () => {
+      scanRef.current?.stop();
+      scanRef.current = null;
+      stopMediaStream(streamRef.current);
+      streamRef.current = null;
+    };
   }, []);
 
   async function logout() {
@@ -139,6 +147,8 @@ export default function EmployeeAppPage() {
     setSuccess(null);
     setGpsHint('Preparing camera & location…');
     setScanning(true);
+    scanRef.current?.stop();
+    scanRef.current = null;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: 'environment' } },
@@ -146,34 +156,30 @@ export default function EmployeeAppPage() {
       });
       streamRef.current = stream;
       if (videoRef.current) {
+        videoRef.current.setAttribute('playsinline', 'true');
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
-      setGpsHint('Point at the gate QR code');
-      const BD = (
-        window as unknown as {
-          BarcodeDetector?: new (o: { formats: string[] }) => {
-            detect: (s: ImageBitmapSource) => Promise<Array<{ rawValue: string }>>;
-          };
-        }
-      ).BarcodeDetector;
-      if (BD && videoRef.current) {
-        const detector = new BD({ formats: ['qr_code'] });
-        const tick = async () => {
-          if (!videoRef.current || !streamRef.current) return;
-          try {
-            const codes = await detector.detect(videoRef.current);
-            if (codes[0]?.rawValue) {
-              await submitToken(codes[0].rawValue, nextMode);
-              return;
-            }
-          } catch {
-            /* keep scanning */
-          }
-          requestAnimationFrame(() => void tick());
-        };
-        requestAnimationFrame(() => void tick());
+      if (!videoRef.current) {
+        setError('Camera preview failed. Paste the QR token below.');
+        setGpsHint('');
+        return;
       }
+      setGpsHint('Point at the gate QR code');
+      const BD = (window as unknown as { BarcodeDetector?: BarcodeDetectorLike }).BarcodeDetector;
+      const handle = await startQrScanner({
+        video: videoRef.current,
+        stream,
+        barcodeDetector: BD ?? null,
+        onDetect: (token) => {
+          void submitToken(token, nextMode);
+        },
+        onEngineUnavailable: () => {
+          setGpsHint('Camera is on, but QR scanning is unavailable. Paste the token below.');
+          setError('QR scanner engine is unavailable on this browser. Paste the QR token below.');
+        },
+      });
+      scanRef.current = handle;
     } catch {
       setError('Camera unavailable. Paste QR token below or allow camera.');
       setGpsHint('');
@@ -181,7 +187,9 @@ export default function EmployeeAppPage() {
   }
 
   function stopCamera() {
-    streamRef.current?.getTracks().forEach((t) => t.stop());
+    scanRef.current?.stop();
+    scanRef.current = null;
+    stopMediaStream(streamRef.current);
     streamRef.current = null;
     setScanning(false);
     setGpsHint('');
@@ -256,7 +264,7 @@ export default function EmployeeAppPage() {
       liveUntil = Math.max(0, Math.ceil((startMs - now.getTime()) / 60000));
     } else {
       const rawLate = Math.max(0, Math.floor((now.getTime() - startMs) / 60000));
-      liveLate = Math.max(0, rawLate - grace);
+      liveLate = lateMinutesAfterGrace(rawLate, grace);
     }
   } else if (timing) {
     liveUntil = timing.minutesUntilStart;

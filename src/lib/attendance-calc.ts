@@ -41,6 +41,13 @@ export function diffMinutes(later: Date, earlier: Date): number {
   return Math.floor((later.getTime() - earlier.getTime()) / 60000);
 }
 
+/** Grace decides Late vs On Time. Once late, count from scheduled start (not grace). */
+export function lateMinutesAfterGrace(rawLateMinutes: number, gracePeriodMinutes: number): number {
+  if (rawLateMinutes <= 0) return 0;
+  if (rawLateMinutes <= gracePeriodMinutes) return 0;
+  return rawLateMinutes;
+}
+
 export function formatDuration(totalMinutes: number | null | undefined): string {
   if (totalMinutes == null || Number.isNaN(totalMinutes)) return '—';
   const h = Math.floor(Math.abs(totalMinutes) / 60);
@@ -94,7 +101,7 @@ export function calculateAttendance(input: CalcInput): CalcResult {
   if (input.manualCheckIn) flags.push('MANUAL_CHECKIN');
 
   const rawLate = Math.max(0, diffMinutes(input.checkInAt, input.scheduledStart));
-  lateMinutes = Math.max(0, rawLate - input.gracePeriodMinutes);
+  lateMinutes = lateMinutesAfterGrace(rawLate, input.gracePeriodMinutes);
   if (lateMinutes > 0) flags.push('LATE');
   else flags.push('ON_TIME');
 
