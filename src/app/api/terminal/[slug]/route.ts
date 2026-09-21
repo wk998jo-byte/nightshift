@@ -3,16 +3,27 @@ import { prisma } from '@/lib/db';
 import { createQrToken, hashToken } from '@/lib/security';
 import { randomUUID } from 'crypto';
 
+function requestHostname(req: NextRequest): string {
+  const forwarded = req.headers.get('x-forwarded-host');
+  const raw = (forwarded || req.headers.get('host') || req.nextUrl.hostname || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+  return raw.split(':')[0];
+}
+
 function isSameAppRequest(req: NextRequest): boolean {
   const site = req.headers.get('sec-fetch-site');
   if (site === 'same-origin' || site === 'same-site') return true;
 
-  const requestHostname = req.nextUrl.hostname.toLowerCase();
+  const effectiveHostname = requestHostname(req);
+  if (!effectiveHostname) return false;
+
   for (const header of ['origin', 'referer'] as const) {
     const value = req.headers.get(header);
     if (!value) continue;
     try {
-      if (new URL(value).hostname.toLowerCase() === requestHostname) return true;
+      if (new URL(value).hostname.toLowerCase() === effectiveHostname) return true;
     } catch {
       return false;
     }
