@@ -31,7 +31,12 @@ function run(cmd: string) {
 }
 
 async function main() {
-  process.env.DATABASE_URL ||= 'file:./dev.db';
+  if (!process.env.DATABASE_URL?.trim()) {
+    console.error(
+      'DATABASE_URL is not set. PostgreSQL is required. Copy .env.example and set DATABASE_URL to a postgresql:// connection string.'
+    );
+    process.exit(1);
+  }
 
   if (!process.env.AUTH_SECRET?.trim() || !process.env.QR_SECRET?.trim()) {
     console.error(
