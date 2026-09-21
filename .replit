@@ -1,0 +1,20 @@
+run = "npm run replit"
+entrypoint = "package.json"
+modules = ["nodejs-20"]
+hidden = [".config", ".git", ".next", "node_modules"]
+
+[nix]
+channel = "stable-24_05"
+
+[env]
+PORT = "3000"
+DATABASE_URL = "file:./dev.db"
+NEXT_PUBLIC_APP_NAME = "Night Shift Attendance"
+
+[deployment]
+run = ["sh", "-c", "npm run start:replit"]
+build = ["npm", "run", "build"]
+
+[[ports]]
+localPort = 3000
+externalPort = 80

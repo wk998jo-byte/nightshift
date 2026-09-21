@@ -1,0 +1,17 @@
+{
+  "name": "Night Shift Attendance",
+  "short_name": "NS Attend",
+  "description": "Bin Quraya Night Shift Attendance System",
+  "start_url": "/login",
+  "display": "standalone",
+  "background_color": "#F3F5F8",
+  "theme_color": "#C8102E",
+  "lang": "en",
+  "icons": [
+    {
+      "src": "/bin-quraya-logo.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
