@@ -11,6 +11,7 @@ import {
   parseRadiusMeters,
   parseTerminalSlug,
   readBootstrapInput,
+  retireLegacyShift,
   BootstrapError,
 } from './bootstrap-production';
 
@@ -116,5 +117,109 @@ describe('production bootstrap guards and validation', () => {
         ),
       (err: unknown) => err instanceof BootstrapError && /must be different/.test(err.message)
     );
+  });
+});
+
+function mockLegacyDb(options: {
+  shift?: { id: string; name: string; startTime: string; endTime: string; isActive: boolean } | null;
+  assignmentCount?: number;
+  attendanceCount?: number;
+}) {
+  const updates: Array<{ id: string; isActive: boolean }> = [];
+  let queried = false;
+  const prisma = {
+    shift: {
+      async findMany() {
+        queried = true;
+        return options.shift ? [options.shift] : [];
+      },
+      async update(args: { where: { id: string }; data: { isActive: boolean } }) {
+        updates.push({ id: args.where.id, isActive: args.data.isActive });
+        return args;
+      },
+    },
+    employeeShiftAssignment: {
+      async count() {
+        return options.assignmentCount ?? 0;
+      },
+    },
+    attendanceRecord: {
+      async count() {
+        return options.attendanceCount ?? 0;
+      },
+    },
+  };
+  return { prisma, updates, wasQueried: () => queried };
+}
+
+describe('legacy production shift', () => {
+  it('legacy unused → becomes inactive', async () => {
+    const { prisma, updates } = mockLegacyDb({
+      shift: {
+        id: 'legacy-1',
+        name: 'Night Shift',
+        startTime: '18:00',
+        endTime: '06:00',
+        isActive: true,
+      },
+      assignmentCount: 0,
+      attendanceCount: 0,
+    });
+    const input = readBootstrapInput(
+      validEnv({
+        PROD_SHIFT_NAME: 'Night Shift',
+        PROD_SHIFT_START_TIME: '18:00',
+        PROD_SHIFT_END_TIME: '06:00',
+      })
+    );
+    await retireLegacyShift(prisma, input);
+    assert.deepEqual(updates, [{ id: 'legacy-1', isActive: false }]);
+  });
+
+  it('legacy used → bootstrap refuses to modify it', async () => {
+    const { prisma, updates } = mockLegacyDb({
+      shift: {
+        id: 'legacy-1',
+        name: 'Night Shift',
+        startTime: '18:00',
+        endTime: '06:00',
+        isActive: true,
+      },
+      assignmentCount: 2,
+      attendanceCount: 1,
+    });
+    const input = readBootstrapInput(
+      validEnv({
+        PROD_SHIFT_NAME: 'Night Shift',
+        PROD_SHIFT_START_TIME: '18:00',
+        PROD_SHIFT_END_TIME: '06:00',
+      })
+    );
+    await assert.rejects(
+      () => retireLegacyShift(prisma, input),
+      (err: unknown) =>
+        err instanceof BootstrapError &&
+        /still in use/.test(err.message) &&
+        /2 assignment/.test(err.message) &&
+        /1 attendance/.test(err.message)
+    );
+    assert.equal(updates.length, 0);
+  });
+
+  it('no legacy → succeeds', async () => {
+    const { prisma, updates, wasQueried } = mockLegacyDb({
+      shift: {
+        id: 'legacy-1',
+        name: 'Night Shift',
+        startTime: '18:00',
+        endTime: '06:00',
+        isActive: true,
+      },
+    });
+    const input = readBootstrapInput(validEnv());
+    await retireLegacyShift(prisma, input);
+    assert.equal(input.legacyShift, undefined);
+    assert.equal(wasQueried(), false);
+    assert.equal(updates.length, 0);
   });
 });

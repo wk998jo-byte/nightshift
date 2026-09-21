@@ -136,6 +136,12 @@ type ShiftSpec = {
   crossesMidnight: boolean;
 };
 
+type LegacyShiftSpec = {
+  name: string;
+  startTime?: string;
+  endTime?: string;
+};
+
 type BootstrapInput = {
   adminUsername: string;
   adminPassword: string;
@@ -149,9 +155,37 @@ type BootstrapInput = {
   longitude: number;
   radiusMeters: number;
   shifts: [ShiftSpec, ShiftSpec];
+  legacyShift?: LegacyShiftSpec;
   terminalName: string;
   terminalSlug: string;
 };
+
+export type LegacyShiftDb = {
+  shift: {
+    findMany: (args: {
+      where: { name: string };
+    }) => Promise<Array<{ id: string; name: string; startTime: string; endTime: string; isActive: boolean }>>;
+    update: (args: { where: { id: string }; data: { isActive: boolean } }) => Promise<unknown>;
+  };
+  employeeShiftAssignment: {
+    count: (args: { where: { shiftId: string } }) => Promise<number>;
+  };
+  attendanceRecord: {
+    count: (args: { where: { shiftId: string } }) => Promise<number>;
+  };
+};
+
+function readLegacyShiftSpec(env: EnvMap): LegacyShiftSpec | undefined {
+  const name = env.PROD_SHIFT_NAME?.trim();
+  if (!name) return undefined;
+  const startRaw = env.PROD_SHIFT_START_TIME?.trim();
+  const endRaw = env.PROD_SHIFT_END_TIME?.trim();
+  return {
+    name,
+    startTime: startRaw ? parseHHMM(startRaw, 'PROD_SHIFT_START_TIME') : undefined,
+    endTime: endRaw ? parseHHMM(endRaw, 'PROD_SHIFT_END_TIME') : undefined,
+  };
+}
 
 function readShiftSpec(env: EnvMap, index: 1 | 2): ShiftSpec {
   const prefix = `PROD_SHIFT_${index}`;
@@ -188,6 +222,7 @@ export function readBootstrapInput(env: EnvMap = process.env): BootstrapInput {
     longitude: parseLongitude(requireEnv('PROD_PROJECT_LONGITUDE', env)),
     radiusMeters: parseRadiusMeters(requireEnv('PROD_PROJECT_RADIUS_METERS', env)),
     shifts: [shift1, shift2],
+    legacyShift: readLegacyShiftSpec(env),
     terminalName: requireEnv('PROD_TERMINAL_NAME', env),
     terminalSlug: parseTerminalSlug(requireEnv('PROD_TERMINAL_SLUG', env)),
   };
@@ -419,11 +454,85 @@ async function ensureTerminal(prisma: PrismaClient, input: BootstrapInput, proje
   return existing;
 }
 
+function isSameAsCurrentShift(
+  existing: { name: string; startTime: string; endTime: string },
+  shifts: ShiftSpec[]
+): boolean {
+  return shifts.some(
+    (spec) =>
+      spec.name === existing.name &&
+      spec.startTime === existing.startTime &&
+      spec.endTime === existing.endTime
+  );
+}
+
+export async function retireLegacyShift(prisma: LegacyShiftDb, input: BootstrapInput): Promise<void> {
+  const legacy = input.legacyShift;
+  if (!legacy) {
+    return;
+  }
+
+  const matches = await prisma.shift.findMany({ where: { name: legacy.name } });
+  if (matches.length === 0) {
+    console.log(`Legacy shift ${JSON.stringify(legacy.name)} not found — nothing to do.`);
+    return;
+  }
+  if (matches.length > 1) {
+    conflict(
+      `Conflict: multiple shifts named ${JSON.stringify(legacy.name)} already exist. Refusing to guess.`
+    );
+  }
+
+  const existing = matches[0];
+  if (legacy.startTime && existing.startTime !== legacy.startTime) {
+    conflict(
+      `Conflict: legacy shift ${JSON.stringify(legacy.name)} has startTime=${existing.startTime}, expected ${legacy.startTime}. Refusing to modify it.`
+    );
+  }
+  if (legacy.endTime && existing.endTime !== legacy.endTime) {
+    conflict(
+      `Conflict: legacy shift ${JSON.stringify(legacy.name)} has endTime=${existing.endTime}, expected ${legacy.endTime}. Refusing to modify it.`
+    );
+  }
+
+  if (isSameAsCurrentShift(existing, input.shifts)) {
+    console.log(`Legacy shift ${existing.name} is one of the current production shifts — unchanged.`);
+    return;
+  }
+
+  const assignmentCount = await prisma.employeeShiftAssignment.count({
+    where: { shiftId: existing.id },
+  });
+  const attendanceCount = await prisma.attendanceRecord.count({
+    where: { shiftId: existing.id },
+  });
+
+  if (assignmentCount > 0 || attendanceCount > 0) {
+    conflict(
+      `Legacy shift ${JSON.stringify(existing.name)} is still in use (${assignmentCount} assignment(s), ${attendanceCount} attendance record(s)). Refusing to modify it. No Shift, Assignment, or Attendance records were deleted or changed.`
+    );
+  }
+
+  if (!existing.isActive) {
+    console.log(`Legacy shift ${existing.name} is already inactive — unchanged.`);
+    return;
+  }
+
+  await prisma.shift.update({
+    where: { id: existing.id },
+    data: { isActive: false },
+  });
+  console.log(
+    `Legacy shift ${existing.name} had no assignments or attendance — set isActive=false.`
+  );
+}
+
 export async function bootstrapProduction(prisma: PrismaClient, input: BootstrapInput): Promise<void> {
   const project = await ensureProject(prisma, input);
   for (const spec of input.shifts) {
     await ensureShift(prisma, spec);
   }
+  await retireLegacyShift(prisma, input);
   await ensureAdmin(prisma, input, project.id);
   await ensureTerminal(prisma, input, project.id);
 }
