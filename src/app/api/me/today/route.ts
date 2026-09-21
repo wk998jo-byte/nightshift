@@ -2,7 +2,8 @@ import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { formatDuration, formatTime } from '@/lib/attendance-calc';
-import { ensureTonightAssignment, getShiftTiming } from '@/lib/schedule';
+import { getTonightAssignment } from '@/lib/schedule';
+import { getShiftTiming } from '@/lib/schedule-timing';
 
 export async function GET() {
   const auth = await getSession();
@@ -25,17 +26,15 @@ export async function GET() {
     include: { project: true, shift: true },
   });
 
-  const ensured = await ensureTonightAssignment(
-    employee.id,
-    employee.defaultProjectId || undefined
-  );
+  const lookup = await getTonightAssignment(employee.id, new Date());
 
   let schedule = null;
   let timing = null;
+  let scheduleState: 'SCHEDULED' | 'OFF_DAY' | 'NO_SCHEDULE' = lookup.kind;
 
-  if (ensured) {
-    const { assignment, window, timing: t } = ensured;
-    // Refresh timing with current clock
+  if (lookup.kind === 'SCHEDULED' && lookup.assignment && lookup.window) {
+    const assignment = lookup.assignment;
+    const window = lookup.window;
     timing = getShiftTiming(
       new Date(),
       window.scheduledStart,
@@ -104,6 +103,13 @@ export async function GET() {
         }
       : null,
     schedule,
+    scheduleState,
+    scheduleMessage:
+      scheduleState === 'NO_SCHEDULE'
+        ? 'No shift scheduled for today.'
+        : scheduleState === 'OFF_DAY'
+          ? 'You are scheduled OFF today.'
+          : null,
     timing,
     serverNow: new Date().toISOString(),
     history: history.map((h) => ({

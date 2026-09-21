@@ -9,7 +9,7 @@
     "start:replit": "next start --hostname 0.0.0.0 --port ${PORT:-3000}",
     "replit": "tsx scripts/prepare-db.ts && next dev --hostname 0.0.0.0 --port ${PORT:-3000}",
     "lint": "eslint",
-    "test": "tsx --test src/lib/attendance-timezone.test.ts scripts/bootstrap-production.test.ts",
+    "test": "tsx --test src/lib/attendance-timezone.test.ts src/lib/schedule.test.ts scripts/bootstrap-production.test.ts",
     "bootstrap:production": "tsx scripts/bootstrap-production.ts",
     "db:prepare": "tsx scripts/prepare-db.ts",
     "db:migrate": "prisma migrate dev",

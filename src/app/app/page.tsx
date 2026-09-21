@@ -41,6 +41,8 @@ type Today = {
     scheduledEnd: string;
   };
   timing: Timing | null;
+  scheduleState?: 'SCHEDULED' | 'OFF_DAY' | 'NO_SCHEDULE';
+  scheduleMessage?: string | null;
   history: Array<{
     id: string;
     project: string;
@@ -241,6 +243,9 @@ export default function EmployeeAppPage() {
 
   const active = !!data.openShift;
   const timing = data.openShift?.timing || data.timing;
+  const scheduled = data.scheduleState === 'SCHEDULED' && !!data.schedule;
+  const offDay = data.scheduleState === 'OFF_DAY';
+  const noSchedule = data.scheduleState === 'NO_SCHEDULE' || (!data.scheduleState && !data.schedule);
 
   let liveUntil = 0;
   let liveLate = 0;
@@ -293,10 +298,10 @@ export default function EmployeeAppPage() {
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
             <StatusChip tone="brand">
-              {data.openShift?.project.name || data.schedule?.project.name || 'No project'}
+              {data.openShift?.project.name || data.schedule?.project?.name || 'No project'}
             </StatusChip>
-            <StatusChip tone={active ? 'ok' : 'neutral'}>
-              {active ? 'Shift active' : 'Not started'}
+            <StatusChip tone={active ? 'ok' : offDay ? 'neutral' : noSchedule ? 'warn' : 'neutral'}>
+              {active ? 'Shift active' : offDay ? 'Off today' : noSchedule ? 'No schedule' : 'Not started'}
             </StatusChip>
             {!active && timingPhase === 'early' ? (
               <StatusChip tone="info">مبكر</StatusChip>
@@ -338,20 +343,22 @@ export default function EmployeeAppPage() {
                   </p>
                 </div>
                 <p className="text-right text-sm text-slate-500">
-                  {data.schedule
-                    ? `${data.schedule.shift.startTime} → ${data.schedule.shift.endTime}`
-                    : 'No schedule'}
+                  {scheduled
+                    ? `${data.schedule!.shift.startTime} → ${data.schedule!.shift.endTime}`
+                    : offDay
+                      ? 'OFF'
+                      : 'No shift scheduled for today.'}
                 </p>
               </div>
               {data.employee.position ? (
                 <p className="mt-2 text-sm font-medium text-slate-700">{data.employee.position}</p>
               ) : null}
-              {data.schedule?.project.locationLabel ? (
+              {data.schedule?.project?.locationLabel ? (
                 <p className="mt-1 text-sm text-slate-500">{data.schedule.project.locationLabel}</p>
               ) : null}
             </Surface>
 
-            {!active && data.schedule ? (
+            {!active && scheduled ? (
               <Surface
                 className={
                   timingPhase === 'late'
@@ -407,7 +414,18 @@ export default function EmployeeAppPage() {
                 <p className="mb-4 rounded-2xl bg-rose-50 p-3 text-sm text-rose-600">{error}</p>
               ) : null}
 
-              {!active ? (
+              {!active && (offDay || noSchedule) ? (
+                <div className="text-center">
+                  <h2 className="mb-2 text-lg font-bold text-slate-900">
+                    {offDay ? 'You are scheduled OFF today.' : 'No shift scheduled for today.'}
+                  </h2>
+                  <p className="text-sm text-slate-500">
+                    {offDay
+                      ? 'Regular check-in is not allowed.'
+                      : 'Contact supervisor.'}
+                  </p>
+                </div>
+              ) : !active ? (
                 <>
                   <p className="mb-1 text-center text-sm text-slate-500">
                     امسح QR الموقع للبدء

@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { BrandButton, EmployeeAvatar, Logo, StatCard, StatusChip, Surface } from '@/components/ui';
 import { shortName } from '@/lib/employee-identity';
+import { canManageSchedule } from '@/lib/shift-catalog';
+import ShiftScheduleTab from './shift-schedule-tab';
 
 type Summary = {
   scheduled: number;
@@ -80,7 +82,10 @@ function toneFor(status: string): 'ok' | 'warn' | 'danger' | 'info' | 'neutral' 
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [section, setSection] = useState<'tonight' | 'people' | 'projects' | 'audit'>('tonight');
+  const [section, setSection] = useState<'tonight' | 'schedule' | 'people' | 'projects' | 'audit'>(
+    'tonight'
+  );
+  const [role, setRole] = useState('');
   const [workDate, setWorkDate] = useState('');
   const [summary, setSummary] = useState<Summary | null>(null);
   const [records, setRecords] = useState<RecordRow[]>([]);
@@ -122,6 +127,7 @@ export default function DashboardPage() {
       router.replace('/app');
       return;
     }
+    setRole(me.user.role);
     await loadTonight();
   }, [router, loadTonight]);
 
@@ -210,12 +216,13 @@ export default function DashboardPage() {
     return matchQ && matchS;
   });
 
-  const nav = [
-    ['tonight', "Tonight"],
+  const nav: Array<[typeof section, string]> = [
+    ['tonight', 'Tonight'],
+    ...(canManageSchedule(role) ? [['schedule', 'Shift Schedule'] as [typeof section, string]] : []),
     ['people', 'People'],
     ['projects', 'Projects'],
     ['audit', 'Audit'],
-  ] as const;
+  ];
 
   return (
     <main className="mesh-bg min-h-screen">
@@ -443,6 +450,8 @@ export default function DashboardPage() {
             </Surface>
           </>
         ) : null}
+
+        {section === 'schedule' ? <ShiftScheduleTab /> : null}
 
         {section === 'people' ? (
           <Surface>

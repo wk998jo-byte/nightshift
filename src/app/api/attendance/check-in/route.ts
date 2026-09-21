@@ -3,7 +3,9 @@ import { getSession, writeAudit } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { isInsideRadius } from '@/lib/geo';
 import { calculateAttendance } from '@/lib/attendance-calc';
-import { ensureTonightAssignment, getShiftTiming } from '@/lib/schedule';
+import { getTonightAssignment } from '@/lib/schedule';
+import { checkInDeniedReason } from '@/lib/schedule-lookup';
+import { getShiftTiming } from '@/lib/schedule-timing';
 import { fingerprintFromRequest, hashToken, verifyQrToken } from '@/lib/security';
 import { AttendanceMethod } from '@prisma/client';
 
@@ -100,13 +102,17 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Auto-create tonight's assignment if missing (active employees can punch)
-  const ensured = await ensureTonightAssignment(employee.id, project.id);
-  if (!ensured) {
-    return NextResponse.json({ error: 'Could not prepare shift schedule' }, { status: 500 });
+  // Check-in is allowed only for an admin-assigned schedule. QR does not pick a shift.
+  const lookup = await getTonightAssignment(employee.id, new Date());
+  const denied = checkInDeniedReason(lookup.kind);
+  if (denied) {
+    return NextResponse.json({ error: denied.error, code: denied.code }, { status: 403 });
+  }
+  if (!lookup.assignment || !lookup.window) {
+    return NextResponse.json({ error: 'No shift scheduled. Contact supervisor.' }, { status: 403 });
   }
 
-  const { assignment, window } = ensured;
+  const assignment = lookup.assignment;
   if (assignment.projectId !== project.id) {
     return NextResponse.json(
       { error: 'QR is for a different project than your schedule' },
@@ -115,7 +121,7 @@ export async function POST(req: NextRequest) {
   }
 
   const shift = assignment.shift;
-  const { scheduledStart, scheduledEnd } = window;
+  const { scheduledStart, scheduledEnd } = lookup.window;
   const now = new Date();
 
   // Allow early start — no hard block before shift start

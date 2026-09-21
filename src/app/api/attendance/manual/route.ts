@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSession, writeAudit } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { calculateAttendance, scheduledWindow } from '@/lib/attendance-calc';
+import { getTonightAssignment } from '@/lib/schedule';
+import { checkInDeniedReason } from '@/lib/schedule-lookup';
 import { AttendanceMethod } from '@prisma/client';
 
 /** Supervisor/Admin manual check-in or check-out */
@@ -24,19 +26,32 @@ export async function POST(req: NextRequest) {
 
   if (action === 'check-in') {
     const assignmentId = String(body.assignmentId || '');
+    const lookup = await getTonightAssignment(employeeId, at);
+    const denied = checkInDeniedReason(lookup.kind);
+    if (!assignmentId && denied) {
+      return NextResponse.json({ error: denied.error, code: denied.code }, { status: 403 });
+    }
+
     const assignment = assignmentId
       ? await prisma.employeeShiftAssignment.findUnique({
           where: { id: assignmentId },
           include: { shift: true, project: true },
         })
-      : await prisma.employeeShiftAssignment.findFirst({
-          where: { employeeId, status: 'SCHEDULED' },
-          orderBy: { workDate: 'desc' },
-          include: { shift: true, project: true },
-        });
+      : lookup.assignment
+        ? await prisma.employeeShiftAssignment.findUnique({
+            where: { id: lookup.assignment.id },
+            include: { shift: true, project: true },
+          })
+        : null;
 
-    if (!assignment) {
-      return NextResponse.json({ error: 'No assignment found' }, { status: 404 });
+    if (!assignment || assignment.employeeId !== employeeId) {
+      return NextResponse.json({ error: 'No shift scheduled. Contact supervisor.' }, { status: 403 });
+    }
+    if (assignment.status === 'OFF') {
+      return NextResponse.json(
+        { error: 'Employee is scheduled OFF today. Regular check-in is not allowed.', code: 'OFF_DAY' },
+        { status: 403 }
+      );
     }
 
     const open = await prisma.attendanceRecord.findFirst({

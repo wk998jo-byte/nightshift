@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 import { prisma } from '@/lib/db';
-import { resolveWorkDateForShift } from '@/lib/attendance-calc';
+import { scheduledWindow } from '@/lib/attendance-calc';
 import { calendarDateInAppZone } from '@/lib/timezone';
+import { countAbsent, relevantWorkDatesForBoard } from '@/lib/schedule-service';
 
 export async function GET(req: NextRequest) {
   const auth = await getSession();
@@ -11,20 +12,17 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  const night = await prisma.shift.findFirst({
-    where: { crossesMidnight: true, isActive: true },
-  });
-  const workDate =
-    req.nextUrl.searchParams.get('date') ||
-    (night
-      ? resolveWorkDateForShift(new Date(), night.startTime, night.endTime, true)
-      : calendarDateInAppZone(new Date()));
-
+  const now = new Date();
+  const today = calendarDateInAppZone(now);
+  const workDate = req.nextUrl.searchParams.get('date') || today;
   const projectId = req.nextUrl.searchParams.get('projectId') || undefined;
+  const boardDates = req.nextUrl.searchParams.get('date')
+    ? [workDate]
+    : relevantWorkDatesForBoard(now);
 
   const assignments = await prisma.employeeShiftAssignment.findMany({
     where: {
-      workDate,
+      workDate: { in: boardDates },
       status: 'SCHEDULED',
       ...(projectId ? { projectId } : {}),
     },
@@ -36,23 +34,41 @@ export async function GET(req: NextRequest) {
     },
   });
 
+  const visibleAssignments = assignments.filter((a) => {
+    if (a.workDate === workDate) return true;
+    const window = scheduledWindow(
+      a.workDate,
+      a.shift.startTime,
+      a.shift.endTime,
+      a.shift.crossesMidnight
+    );
+    return now < window.scheduledEnd;
+  });
+
   const records = await prisma.attendanceRecord.findMany({
     where: {
-      assignment: { workDate },
+      assignment: { workDate: { in: boardDates } },
       ...(projectId ? { projectId } : {}),
     },
-    include: { employee: true, project: true },
+    include: { employee: true, project: true, assignment: { select: { workDate: true } } },
     orderBy: { checkInAt: 'desc' },
   });
 
-  const scheduled = assignments.length;
+  const checkedInIds = new Set(
+    records
+      .filter((r) => r.checkInAt)
+      .map((r) => `${r.employeeId}:${r.assignment?.workDate || calendarDateInAppZone(r.scheduledStart)}`)
+  );
   const present = records.filter((r) => r.checkInAt).length;
   const late = records.filter((r) => r.lateMinutes > 0).length;
   const overtime = records.filter((r) => r.overtimeMinutes > 0).length;
   const missingCheckout = records.filter((r) => r.checkInAt && !r.checkOutAt).length;
   const working = missingCheckout;
-  const checkedInIds = new Set(records.map((r) => r.employeeId));
-  const absent = assignments.filter((a) => !checkedInIds.has(a.employeeId)).length;
+  const absent = countAbsent({
+    assignments: visibleAssignments,
+    checkedInIds,
+    now,
+  });
 
   const currentlyWorking = records
     .filter((r) => r.checkInAt && !r.checkOutAt)
@@ -71,7 +87,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     workDate,
     summary: {
-      scheduled,
+      scheduled: visibleAssignments.length,
       present,
       late,
       absent,
@@ -95,7 +111,7 @@ export async function GET(req: NextRequest) {
       flags: JSON.parse(r.flags || '[]'),
       manualOverride: r.manualOverride,
     })),
-    assignments: assignments.map((a) => ({
+    assignments: visibleAssignments.map((a) => ({
       employeeName: a.employee.fullName,
       employeeCode: a.employee.employeeCode,
       project: a.project.name,
