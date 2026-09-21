@@ -12,7 +12,7 @@ NEXT_PUBLIC_APP_NAME = "Night Shift Attendance"
 APP_TIMEZONE = "Asia/Riyadh"
 
 [deployment]
-run = ["sh", "-c", "npm run bootstrap:production && npm run start:replit"]
+run = ["sh", "-c", "npm run start:replit"]
 build = ["npm", "run", "build"]
 deploymentTarget = "gce"
 ignorePorts = false
