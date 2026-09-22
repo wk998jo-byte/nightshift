@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { BrandButton, Logo } from '@/components/ui';
+import { loginLandingPath, shouldStayOnLoginAfterLogout } from '@/lib/session-policy';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -12,12 +13,13 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    fetch('/api/auth/me', { credentials: 'include' })
+    const search = typeof window !== 'undefined' ? window.location.search : '';
+    if (shouldStayOnLoginAfterLogout(search)) return;
+    fetch('/api/auth/me', { credentials: 'include', cache: 'no-store' })
       .then((r) => r.json())
       .then((d) => {
-        if (!d.user) return;
-        if (d.user.role === 'EMPLOYEE') router.replace('/app');
-        else router.replace('/dashboard');
+        const next = loginLandingPath(d.user, search);
+        if (next) router.replace(next);
       })
       .catch(() => undefined);
   }, [router]);
@@ -30,6 +32,7 @@ export default function LoginPage() {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         credentials: 'include',
+        cache: 'no-store',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),
       });

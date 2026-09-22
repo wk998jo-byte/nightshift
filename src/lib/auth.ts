@@ -2,8 +2,9 @@ import { cookies } from 'next/headers';
 import type { NextRequest } from 'next/server';
 import { prisma } from './db';
 import { SessionPayload, verifySession } from './security';
+import { SESSION_COOKIE, isActiveAuthUser } from './session-policy';
 
-export const SESSION_COOKIE = 'ns_session';
+export { SESSION_COOKIE, SESSION_MAX_AGE_SECONDS } from './session-policy';
 
 function requestHostname(req: NextRequest): string {
   const forwarded = req.headers.get('x-forwarded-host');
@@ -68,7 +69,14 @@ export async function getSession(): Promise<SessionPayload | null> {
   const jar = await cookies();
   const token = jar.get(SESSION_COOKIE)?.value;
   if (!token) return null;
-  return verifySession(token);
+  const session = await verifySession(token);
+  if (!session) return null;
+  const user = await prisma.user.findUnique({
+    where: { id: session.sub },
+    select: { isActive: true },
+  });
+  if (!isActiveAuthUser(user)) return null;
+  return session;
 }
 
 export async function requireSession(roles?: string[]) {

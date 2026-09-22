@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, createHash } from 'crypto';
 import { SignJWT, jwtVerify } from 'jose';
+import { SESSION_JWT_EXPIRATION } from './session-policy';
 
 function requiredSecret(name: 'AUTH_SECRET' | 'QR_SECRET'): string {
   const value = process.env[name]?.trim();
@@ -31,7 +32,7 @@ export async function signSession(payload: SessionPayload): Promise<string> {
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(payload.sub)
     .setIssuedAt()
-    .setExpirationTime('30d')
+    .setExpirationTime(SESSION_JWT_EXPIRATION)
     .sign(authSecret());
 }
 

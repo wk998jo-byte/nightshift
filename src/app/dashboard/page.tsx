@@ -7,6 +7,7 @@ import { BrandButton, EmployeeAvatar, Logo, StatCard, StatusChip, Surface } from
 import { shortName } from '@/lib/employee-identity';
 import { canManageSchedule } from '@/lib/shift-catalog';
 import { filterBoardRows } from '@/lib/dashboard-board';
+import { completeLogout } from '@/lib/session-policy';
 import ShiftScheduleTab from './shift-schedule-tab';
 import AttendanceDetailsDrawer, {
   type AttendanceDetailsPayload,
@@ -125,6 +126,7 @@ export default function DashboardPage() {
   const [manualEmpId, setManualEmpId] = useState('');
   const [manualReason, setManualReason] = useState('Employee phone unavailable');
   const [msg, setMsg] = useState('');
+  const [logoutError, setLogoutError] = useState('');
   const [now, setNow] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState('');
   const [qrTerminal, setQrTerminal] = useState<{ slug: string; name: string } | null>(null);
@@ -145,7 +147,7 @@ export default function DashboardPage() {
   }, [selectedDate]);
 
   const boot = useCallback(async () => {
-    const me = await fetch('/api/auth/me', { credentials: 'include' }).then((r) => r.json());
+    const me = await fetch('/api/auth/me', { credentials: 'include', cache: 'no-store' }).then((r) => r.json());
     if (!me.user) {
       router.replace('/login');
       return;
@@ -188,8 +190,14 @@ export default function DashboardPage() {
   }, [section]);
 
   async function logout() {
-    await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
-    router.replace('/login');
+    const result = await completeLogout(() =>
+      fetch('/api/auth/logout', { method: 'POST', credentials: 'include', cache: 'no-store' })
+    );
+    if (!result.ok) {
+      setLogoutError(result.error);
+      return;
+    }
+    window.location.replace(result.redirectTo);
   }
 
   async function openDetails(id: string) {
@@ -290,6 +298,7 @@ export default function DashboardPage() {
             <button onClick={logout} className="rounded-xl px-3 py-2 font-medium text-rose-600">
               Logout
             </button>
+            {logoutError ? <span className="text-xs text-rose-600">{logoutError}</span> : null}
           </div>
         </div>
         <div className="mx-auto flex max-w-7xl gap-1 overflow-x-auto px-4 pb-3">

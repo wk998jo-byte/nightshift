@@ -3,13 +3,17 @@ import bcrypt from 'bcryptjs';
 import { prisma } from '@/lib/db';
 import { SESSION_COOKIE, sessionCookieOptions, writeAudit } from '@/lib/auth';
 import { signSession } from '@/lib/security';
+import { authNoStoreHeaders, sessionSetCookieOptions } from '@/lib/session-policy';
 
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => null);
   const username = String(body?.username || '').trim();
   const password = String(body?.password || '');
   if (!username || !password) {
-    return NextResponse.json({ error: 'Username and password required' }, { status: 400 });
+    return NextResponse.json(
+      { error: 'Username and password required' },
+      { status: 400, headers: authNoStoreHeaders() }
+    );
   }
 
   const user = await prisma.user.findUnique({
@@ -17,12 +21,18 @@ export async function POST(req: NextRequest) {
     include: { employee: true },
   });
   if (!user || !user.isActive) {
-    return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+    return NextResponse.json(
+      { error: 'Invalid credentials' },
+      { status: 401, headers: authNoStoreHeaders() }
+    );
   }
 
   const ok = await bcrypt.compare(password, user.passwordHash);
   if (!ok) {
-    return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 });
+    return NextResponse.json(
+      { error: 'Invalid credentials' },
+      { status: 401, headers: authNoStoreHeaders() }
+    );
   }
 
   const token = await signSession({
@@ -47,23 +57,23 @@ export async function POST(req: NextRequest) {
     userAgent: req.headers.get('user-agent'),
   });
 
-  const res = NextResponse.json({
-    ok: true,
-    role: user.role,
-    username: user.username,
-    employee: user.employee
-      ? {
-          id: user.employee.id,
-          fullName: user.employee.fullName,
-          employeeCode: user.employee.employeeCode,
-        }
-      : null,
-  });
+  const res = NextResponse.json(
+    {
+      ok: true,
+      role: user.role,
+      username: user.username,
+      employee: user.employee
+        ? {
+            id: user.employee.id,
+            fullName: user.employee.fullName,
+            employeeCode: user.employee.employeeCode,
+          }
+        : null,
+    },
+    { headers: authNoStoreHeaders() }
+  );
 
-  res.cookies.set(SESSION_COOKIE, token, {
-    ...sessionCookieOptions(req),
-    maxAge: 60 * 60 * 24 * 30,
-  });
+  res.cookies.set(SESSION_COOKIE, token, sessionSetCookieOptions(sessionCookieOptions(req)));
 
   return res;
 }

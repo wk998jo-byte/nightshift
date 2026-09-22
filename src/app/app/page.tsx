@@ -6,6 +6,7 @@ import { BrandButton, EmployeeAvatar, Logo, StatusChip, Surface } from '@/compon
 import { lateMinutesAfterGrace } from '@/lib/attendance-calc';
 import { getBrowserDeviceId } from '@/lib/browser-device-id';
 import { startQrScanner, stopMediaStream, type BarcodeDetectorLike } from '@/lib/qr-scanner';
+import { completeLogout } from '@/lib/session-policy';
 
 type Timing = {
   phase: 'early' | 'on_time' | 'late' | 'in_shift';
@@ -138,8 +139,14 @@ export default function EmployeeAppPage() {
   }, []);
 
   async function logout() {
-    await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
-    router.replace('/login');
+    const result = await completeLogout(() =>
+      fetch('/api/auth/logout', { method: 'POST', credentials: 'include', cache: 'no-store' })
+    );
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    window.location.replace(result.redirectTo);
   }
 
   async function startCamera(nextMode: 'in' | 'out') {
