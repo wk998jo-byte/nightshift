@@ -188,7 +188,7 @@ describe('export rows', () => {
     assert.equal(rows[0].checkIn, '—');
   });
 
-  it('OFF excluded', () => {
+  it('OFF assignment appears with OFF shift/status and no placeholder times', () => {
     const rows = buildExportRows(
       [
         asg({
@@ -200,7 +200,42 @@ describe('export rows', () => {
       ],
       afterWindow
     );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].shift, 'OFF');
+    assert.equal(rows[0].status, 'OFF');
+    assert.equal(rows[0].flags, 'OFF');
+    assert.equal(rows[0].scheduledStart, '—');
+    assert.equal(rows[0].scheduledEnd, '—');
+    assert.equal(rows[0].checkIn, '—');
+    assert.equal(rows[0].checkOut, '—');
+    assert.equal(rows[0].worked, '—');
+    assert.equal(rows[0].late, '—');
+    assert.equal(rows[0].earlyLeave, '—');
+    assert.equal(rows[0].ot, '—');
+    assert.equal(rows[0].project, 'Riyadh Night Site');
+    assert.equal(rows[0].bn, '71378');
+    const csv = rowsToCsv(rows);
+    assert.match(csv, /"OFF"/);
+    assert.equal(csv.includes('3:30 PM'), false);
+    assert.equal(csv.includes('15:30'), false);
+    assert.equal(csv.includes('Shift 1'), false);
+  });
+
+  it('NO_SCHEDULE still does not appear', () => {
+    const rows = buildExportRows([], afterWindow);
     assert.equal(rows.length, 0);
+    const leftover = buildExportRows(
+      [
+        asg({
+          workDate: '2026-09-21',
+          status: 'LEAVE',
+          employee: person('Turki Daher M AlShammari', '71378'),
+          shift: shift1,
+        }),
+      ],
+      afterWindow
+    );
+    assert.equal(leftover.length, 0);
   });
 
   it('multiple days exported correctly', () => {

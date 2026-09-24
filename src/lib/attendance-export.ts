@@ -157,8 +157,34 @@ function parseFlags(raw: string | null | undefined): string {
 export function buildExportRows(assignments: ExportAssignment[], now = new Date()): ExportRow[] {
   const rows: ExportRow[] = [];
   for (const a of assignments) {
-    if (a.status !== 'SCHEDULED') continue;
+    if (a.status !== 'SCHEDULED' && a.status !== 'OFF') continue;
     if (!includeExportEmployee(a.employee)) continue;
+
+    const identity = {
+      workDate: a.workDate,
+      employee: a.employee.fullName,
+      bn: a.employee.badgeNumber || a.employee.employeeCode,
+      project: a.project.name,
+    };
+
+    if (a.status === 'OFF') {
+      rows.push({
+        ...identity,
+        shift: 'OFF',
+        scheduledStart: '—',
+        scheduledEnd: '—',
+        checkIn: '—',
+        checkOut: '—',
+        worked: '—',
+        late: '—',
+        earlyLeave: '—',
+        ot: '—',
+        status: 'OFF',
+        flags: 'OFF',
+      });
+      continue;
+    }
+
     const window = scheduledWindow(
       a.workDate,
       a.shift.startTime,
@@ -169,11 +195,8 @@ export function buildExportRows(assignments: ExportAssignment[], now = new Date(
     const checkInAt = asDate(punch?.checkInAt);
     const checkOutAt = asDate(punch?.checkOutAt);
     const base = {
-      workDate: a.workDate,
-      employee: a.employee.fullName,
-      bn: a.employee.badgeNumber || a.employee.employeeCode,
+      ...identity,
       shift: exportShiftName(a.shift),
-      project: a.project.name,
       scheduledStart: formatTime(window.scheduledStart),
       scheduledEnd: formatTime(window.scheduledEnd),
     };

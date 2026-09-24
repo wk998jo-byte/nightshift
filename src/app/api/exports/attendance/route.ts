@@ -29,7 +29,7 @@ export async function GET(req: NextRequest) {
   const projectId = params.get('projectId') || undefined;
   const assignments = await prisma.employeeShiftAssignment.findMany({
     where: {
-      status: 'SCHEDULED',
+      status: { in: ['SCHEDULED', 'OFF'] },
       workDate: { gte: range.from, lte: range.to },
       ...(projectId ? { projectId } : {}),
     },
