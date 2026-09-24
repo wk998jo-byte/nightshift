@@ -9,6 +9,7 @@ import { canManageSchedule } from '@/lib/shift-catalog';
 import { filterBoardRows } from '@/lib/dashboard-board';
 import { completeLogout } from '@/lib/session-policy';
 import ShiftScheduleTab from './shift-schedule-tab';
+import ExportAttendanceDrawer from './export-attendance-drawer';
 import AttendanceDetailsDrawer, {
   type AttendanceDetailsPayload,
 } from './attendance-details-drawer';
@@ -127,6 +128,7 @@ export default function DashboardPage() {
   const [manualReason, setManualReason] = useState('Employee phone unavailable');
   const [msg, setMsg] = useState('');
   const [logoutError, setLogoutError] = useState('');
+  const [exportOpen, setExportOpen] = useState(false);
   const [now, setNow] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState('');
   const [qrTerminal, setQrTerminal] = useState<{ slug: string; name: string } | null>(null);
@@ -289,12 +291,13 @@ export default function DashboardPage() {
                 QR Terminal
               </Link>
             ) : null}
-            <a
-              href={`/api/exports/attendance?date=${workDate}`}
+            <button
+              type="button"
+              onClick={() => setExportOpen(true)}
               className="rounded-xl bg-slate-100 px-3 py-2 font-medium text-slate-700 hover:bg-slate-200"
             >
-              Export CSV
-            </a>
+              Export Attendance
+            </button>
             <button onClick={logout} className="rounded-xl px-3 py-2 font-medium text-rose-600">
               Logout
             </button>
@@ -687,6 +690,11 @@ export default function DashboardPage() {
         error={detailsError}
         details={details}
         onClose={() => setDetailsOpen(false)}
+      />
+      <ExportAttendanceDrawer
+        open={exportOpen}
+        defaultDate={selectedDate || workDate}
+        onClose={() => setExportOpen(false)}
       />
     </main>
   );
