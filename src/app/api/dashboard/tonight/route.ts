@@ -15,20 +15,36 @@ export async function GET(req: NextRequest) {
   const workDate = boardWorkDate(now, req.nextUrl.searchParams.get('date'));
   const projectId = req.nextUrl.searchParams.get('projectId') || undefined;
 
-  const assignments = await prisma.employeeShiftAssignment.findMany({
-    where: {
-      workDate,
-      ...(projectId ? { projectId } : {}),
-    },
-    include: {
-      employee: { include: { user: { select: { role: true, isActive: true } } } },
-      project: true,
-      shift: true,
-      attendance: true,
-    },
-  });
+  const [assignments, exceptions] = await Promise.all([
+    prisma.employeeShiftAssignment.findMany({
+      where: {
+        workDate,
+        ...(projectId ? { projectId } : {}),
+      },
+      include: {
+        employee: { include: { user: { select: { role: true, isActive: true } } } },
+        project: true,
+        shift: true,
+        attendance: true,
+      },
+    }),
+    prisma.dayException.findMany({ where: { workDate } }),
+  ]);
 
-  const board = buildTonightBoard({ workDate, now, assignments });
+  const board = buildTonightBoard({
+    workDate,
+    now,
+    assignments,
+    exceptions: exceptions.map((row) => ({
+      workDate: row.workDate,
+      employeeId: row.employeeId,
+      type: row.type,
+      reason: row.reason,
+      expectedStartTime: row.expectedStartTime,
+      expectedEndTime: row.expectedEndTime,
+      expectedWorkMinutes: row.expectedWorkMinutes,
+    })),
+  });
   const terminalRow = await prisma.qrTerminal.findFirst({
     where: { isActive: true, project: { isActive: true } },
     orderBy: { createdAt: 'asc' },

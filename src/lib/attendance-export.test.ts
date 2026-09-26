@@ -14,6 +14,7 @@ import {
   rowsToCsv,
   type ExportAssignment,
 } from './attendance-export';
+import type { DayExceptionRecord } from './day-status';
 
 process.env.TZ = 'UTC';
 process.env.APP_TIMEZONE = 'Asia/Riyadh';
@@ -335,5 +336,123 @@ describe('CSV quality', () => {
     assert.equal(canExportAttendance('SUPERVISOR'), true);
     assert.equal(canExportAttendance('SECURITY'), false);
     assert.equal(canExportAttendance('EMPLOYEE'), false);
+  });
+});
+
+describe('export administrative statuses', () => {
+  const afterWindow = new Date('2026-09-21T13:00:00.000Z');
+
+  it('excused days show dashes and the exception status', () => {
+    const types: DayExceptionRecord['type'][] = [
+      'HOLIDAY',
+      'SICK_LEAVE',
+      'UMRA_LEAVE',
+      'HALF_DAY',
+      'EMERGENCY_VACATION',
+      'VACATION',
+      'RELEASED',
+      'NEW',
+    ];
+    for (const type of types) {
+      const rows = buildExportRows(
+        [
+          asg({
+            employeeId: 'e1',
+            workDate: '2026-09-21',
+            employee: person('Abdulaziz Abdullah H AlZahrani', '71326'),
+            shift: shift1,
+          }),
+        ],
+        afterWindow,
+        [
+          {
+            workDate: '2026-09-21',
+            employeeId: type === 'HOLIDAY' ? null : 'e1',
+            type,
+            expectedStartTime: type === 'HALF_DAY' ? '15:30' : null,
+            expectedEndTime: type === 'HALF_DAY' ? '23:30' : null,
+          },
+        ]
+      );
+      assert.equal(rows[0].status, type);
+      assert.equal(rows[0].checkIn, '—');
+      assert.equal(rows[0].checkOut, '—');
+      assert.equal(rows[0].worked, '—');
+      assert.equal(rows[0].late, '—');
+      assert.equal(rows[0].earlyLeave, '—');
+      assert.equal(rows[0].ot, '—');
+    }
+  });
+
+  it('Holiday Work shows worked minutes and OT', () => {
+    const rows = buildExportRows(
+      [
+        asg({
+          employeeId: 'e1',
+          workDate: '2026-09-21',
+          employee: person('Abdulaziz Abdullah H AlZahrani', '71326'),
+          shift: shift1,
+          attendance: [
+            {
+              checkInAt: new Date('2026-09-21T12:30:00.000Z'),
+              checkOutAt: new Date('2026-09-22T00:30:00.000Z'),
+              workedMinutes: 720,
+              lateMinutes: 0,
+              earlyLeaveMinutes: 0,
+              overtimeMinutes: 0,
+              statusPrimary: 'ON_TIME',
+              flags: '["ON_TIME"]',
+            },
+          ],
+        }),
+      ],
+      afterWindow,
+      [{ workDate: '2026-09-21', employeeId: null, type: 'HOLIDAY' }]
+    );
+    assert.equal(rows[0].status, 'HOLIDAY_WORK');
+    assert.notEqual(rows[0].checkIn, '—');
+    assert.notEqual(rows[0].checkOut, '—');
+    assert.equal(rows[0].worked, '12h 00m');
+    assert.equal(rows[0].ot, '720');
+  });
+
+  it('OFF remains OFF and date-range behavior stays intact', () => {
+    const rows = buildExportRows(
+      [
+        asg({
+          workDate: '2026-09-21',
+          status: 'OFF',
+          employee: person('Turki Daher M AlShammari', '71378'),
+          shift: shift1,
+        }),
+        asg({
+          workDate: '2026-09-22',
+          employee: person('Turki Daher M AlShammari', '71378'),
+          shift: shift2,
+        }),
+      ],
+      new Date('2026-09-25T12:00:00.000Z')
+    );
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0].status, 'OFF');
+    assert.equal(rows[0].shift, 'OFF');
+    assert.equal(rows[1].workDate, '2026-09-22');
+    assert.equal(rows[1].status, 'ABSENT');
+  });
+
+  it('explicit ABSENT exception is exported as ABSENT', () => {
+    const rows = buildExportRows(
+      [
+        asg({
+          employeeId: 'e1',
+          workDate: '2026-09-21',
+          employee: person('Abdullah Mahmoud B AlAnazi', '71343'),
+          shift: shift1,
+        }),
+      ],
+      new Date('2026-09-21T10:00:00.000Z'),
+      [{ workDate: '2026-09-21', employeeId: 'e1', type: 'ABSENT' }]
+    );
+    assert.equal(rows[0].status, 'ABSENT');
   });
 });

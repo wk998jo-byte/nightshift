@@ -27,22 +27,41 @@ export async function GET(req: NextRequest) {
   }
 
   const projectId = params.get('projectId') || undefined;
-  const assignments = await prisma.employeeShiftAssignment.findMany({
-    where: {
-      status: { in: ['SCHEDULED', 'OFF'] },
-      workDate: { gte: range.from, lte: range.to },
-      ...(projectId ? { projectId } : {}),
-    },
-    include: {
-      employee: { include: { user: { select: { role: true, isActive: true } } } },
-      project: true,
-      shift: true,
-      attendance: true,
-    },
-    orderBy: [{ workDate: 'asc' }, { employeeId: 'asc' }],
-  });
+  const [assignments, exceptions] = await Promise.all([
+    prisma.employeeShiftAssignment.findMany({
+      where: {
+        status: { in: ['SCHEDULED', 'OFF'] },
+        workDate: { gte: range.from, lte: range.to },
+        ...(projectId ? { projectId } : {}),
+      },
+      include: {
+        employee: { include: { user: { select: { role: true, isActive: true } } } },
+        project: true,
+        shift: true,
+        attendance: true,
+      },
+      orderBy: [{ workDate: 'asc' }, { employeeId: 'asc' }],
+    }),
+    prisma.dayException.findMany({
+      where: { workDate: { gte: range.from, lte: range.to } },
+    }),
+  ]);
 
-  const csv = rowsToCsv(buildExportRows(assignments, new Date()));
+  const csv = rowsToCsv(
+    buildExportRows(
+      assignments,
+      new Date(),
+      exceptions.map((row) => ({
+        workDate: row.workDate,
+        employeeId: row.employeeId,
+        type: row.type,
+        reason: row.reason,
+        expectedStartTime: row.expectedStartTime,
+        expectedEndTime: row.expectedEndTime,
+        expectedWorkMinutes: row.expectedWorkMinutes,
+      }))
+    )
+  );
   const filename = exportFilename(range.from, range.to);
   return new NextResponse(csv, {
     headers: {

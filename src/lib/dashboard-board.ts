@@ -1,5 +1,9 @@
-import { isScheduledAbsent } from './schedule-lookup';
 import { isShiftScheduleEmployee, classifyShift } from './shift-catalog';
+import {
+  evaluateAssignmentDay,
+  halfDayWindow,
+  type DayExceptionRecord,
+} from './day-status';
 import { addCalendarDays, calendarDateInAppZone, getAppTimezone } from './timezone';
 import { scheduledWindow } from './attendance-calc';
 import { DateTime } from 'luxon';
@@ -120,6 +124,7 @@ export function buildTonightBoard(input: {
   workDate: string;
   now: Date;
   assignments: BoardAssignment[];
+  exceptions?: DayExceptionRecord[];
 }): {
   scheduled: BoardAssignment[];
   present: number;
@@ -168,21 +173,56 @@ export function buildTonightBoard(input: {
   let absent = 0;
   const absentRows: BoardRow[] = [];
 
+  const exceptions = input.exceptions || [];
+
   for (const a of scheduled) {
-    const window = scheduledWindow(
+    let window = scheduledWindow(
       a.workDate,
       a.shift.startTime,
       a.shift.endTime,
       a.shift.crossesMidnight
     );
+    const preview = evaluateAssignmentDay({
+      assignmentStatus: a.status,
+      workDate: a.workDate,
+      employeeId: a.employeeId,
+      now: input.now,
+      scheduledStart: window.scheduledStart,
+      scheduledEnd: window.scheduledEnd,
+      gracePeriodMinutes: a.shift.gracePeriodMinutes,
+      hasCheckIn: false,
+      exceptions,
+    });
+    if (preview.exception?.type === 'HALF_DAY') {
+      window = halfDayWindow(
+        a.workDate,
+        preview.exception,
+        a.shift.startTime,
+        a.shift.endTime,
+        a.shift.crossesMidnight
+      );
+    }
     const punch = a.attendance.find((r) => r.checkInAt) ?? null;
     const shiftKey = shiftKeyOf(a.shift);
     const shiftLabel = shiftDisplayLabel(a.shift);
+    const day = evaluateAssignmentDay({
+      assignmentStatus: a.status,
+      workDate: a.workDate,
+      employeeId: a.employeeId,
+      now: input.now,
+      scheduledStart: window.scheduledStart,
+      scheduledEnd: window.scheduledEnd,
+      gracePeriodMinutes: a.shift.gracePeriodMinutes,
+      hasCheckIn: !!punch?.checkInAt,
+      exceptions,
+    });
 
     if (punch?.checkInAt) {
       present += 1;
+      const holidayOt =
+        day.holidayWork && punch.workedMinutes != null ? punch.workedMinutes : punch.overtimeMinutes;
       if (punch.lateMinutes > 0) late += 1;
-      if (punch.overtimeMinutes > 0) overtime += 1;
+      if (holidayOt > 0) overtime += 1;
       if (!punch.checkOutAt) {
         if (input.now > window.scheduledEnd) {
           missingCheckout += 1;
@@ -215,20 +255,23 @@ export function buildTonightBoard(input: {
         checkOutAt: punch.checkOutAt ? punch.checkOutAt.toISOString() : null,
         workedMinutes: punch.workedMinutes,
         lateMinutes: punch.lateMinutes,
-        overtimeMinutes: punch.overtimeMinutes,
+        overtimeMinutes: holidayOt,
         earlyLeaveMinutes: punch.earlyLeaveMinutes,
-        statusPrimary: punch.checkOutAt
-          ? punch.statusPrimary
-          : input.now > window.scheduledEnd
-            ? 'MISSING_CHECKOUT'
-            : punch.lateMinutes > 0
-              ? 'LATE'
-              : 'WORKING',
+        statusPrimary: day.holidayWork
+          ? 'HOLIDAY_WORK'
+          : punch.checkOutAt
+            ? punch.statusPrimary
+            : input.now > window.scheduledEnd
+              ? 'MISSING_CHECKOUT'
+              : punch.lateMinutes > 0
+                ? 'LATE'
+                : 'WORKING',
         flags: (() => {
           try {
-            return JSON.parse(punch.flags || '[]');
+            const parsed = JSON.parse(punch.flags || '[]');
+            return day.holidayWork ? [...parsed, 'HOLIDAY_WORK'] : parsed;
           } catch {
-            return [];
+            return day.holidayWork ? ['HOLIDAY_WORK'] : [];
           }
         })(),
         manualOverride: !!punch.manualOverride,
@@ -237,14 +280,32 @@ export function buildTonightBoard(input: {
       continue;
     }
 
-    const isAbsent = isScheduledAbsent({
-      status: a.status,
-      hasCheckIn: false,
-      now: input.now,
-      scheduledStart: window.scheduledStart,
-      gracePeriodMinutes: a.shift.gracePeriodMinutes,
-    });
-    if (!isAbsent) continue;
+    if (day.excused && !day.isAbsent) {
+      const row: BoardRow = {
+        id: `exception:${a.id}`,
+        employeeId: a.employeeId,
+        employeeName: a.employee.fullName,
+        employeeCode: a.employee.employeeCode,
+        project: a.project.name,
+        projectLocation: a.project.locationLabel,
+        shiftKey,
+        shiftLabel,
+        scheduledStart: window.scheduledStart.toISOString(),
+        checkInAt: null,
+        checkOutAt: null,
+        workedMinutes: null,
+        lateMinutes: 0,
+        overtimeMinutes: 0,
+        earlyLeaveMinutes: 0,
+        statusPrimary: day.status,
+        flags: [day.status],
+        manualOverride: false,
+        virtualAbsent: true,
+      };
+      rows.push(row);
+      continue;
+    }
+    if (!day.isAbsent) continue;
     absent += 1;
     const row: BoardRow = {
       id: `absent:${a.id}`,

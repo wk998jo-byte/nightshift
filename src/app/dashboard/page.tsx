@@ -9,6 +9,7 @@ import { canManageSchedule } from '@/lib/shift-catalog';
 import { filterBoardRows } from '@/lib/dashboard-board';
 import { completeLogout } from '@/lib/session-policy';
 import ShiftScheduleTab from './shift-schedule-tab';
+import DayExceptionsTab from './day-exceptions-tab';
 import ExportAttendanceDrawer from './export-attendance-drawer';
 import AttendanceDetailsDrawer, {
   type AttendanceDetailsPayload,
@@ -88,16 +89,34 @@ function fmtTime(iso: string | null) {
 
 function toneFor(status: string): 'ok' | 'warn' | 'danger' | 'info' | 'neutral' {
   if (status === 'ON_TIME' || status === 'PRESENT' || status === 'WORKING') return 'ok';
-  if (status === 'LATE' || status === 'OVERTIME' || status === 'EARLY_DEPARTURE') return 'warn';
+  if (
+    status === 'LATE' ||
+    status === 'OVERTIME' ||
+    status === 'EARLY_DEPARTURE' ||
+    status === 'HOLIDAY_WORK' ||
+    status === 'HALF_DAY'
+  )
+    return 'warn';
   if (status === 'ABSENT' || status === 'MISSING_CHECKOUT') return 'danger';
+  if (
+    status === 'HOLIDAY' ||
+    status === 'SICK_LEAVE' ||
+    status === 'UMRA_LEAVE' ||
+    status === 'EMERGENCY_VACATION' ||
+    status === 'VACATION' ||
+    status === 'RELEASED' ||
+    status === 'NEW' ||
+    status === 'OFF'
+  )
+    return 'info';
   return 'info';
 }
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [section, setSection] = useState<'tonight' | 'schedule' | 'people' | 'projects' | 'audit'>(
-    'tonight'
-  );
+  const [section, setSection] = useState<
+    'tonight' | 'schedule' | 'exceptions' | 'people' | 'projects' | 'audit'
+  >('tonight');
   const [role, setRole] = useState('');
   const [workDate, setWorkDate] = useState('');
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -262,7 +281,12 @@ export default function DashboardPage() {
 
   const nav: Array<[typeof section, string]> = [
     ['tonight', 'Tonight'],
-    ...(canManageSchedule(role) ? [['schedule', 'Shift Schedule'] as [typeof section, string]] : []),
+    ...(canManageSchedule(role)
+      ? [
+          ['schedule', 'Shift Schedule'] as [typeof section, string],
+          ['exceptions', 'Day Status'] as [typeof section, string],
+        ]
+      : []),
     ['people', 'People'],
     ['projects', 'Projects'],
     ['audit', 'Audit'],
@@ -416,6 +440,15 @@ export default function DashboardPage() {
                       <option value="OVERTIME">Overtime</option>
                       <option value="MISSING_CHECKOUT">Missing Checkout</option>
                       <option value="ABSENT">Absent</option>
+                      <option value="HOLIDAY">Holiday</option>
+                      <option value="HOLIDAY_WORK">Holiday Work</option>
+                      <option value="SICK_LEAVE">Sick Leave</option>
+                      <option value="UMRA_LEAVE">Umra Leave</option>
+                      <option value="HALF_DAY">Half Day</option>
+                      <option value="EMERGENCY_VACATION">Emergency Vacation</option>
+                      <option value="VACATION">Vacation</option>
+                      <option value="RELEASED">Released</option>
+                      <option value="NEW">New</option>
                     </select>
                     <select
                       value={shiftFilter}
@@ -486,8 +519,12 @@ export default function DashboardPage() {
                             ) : null}
                           </td>
                           <td className="py-3.5 pr-2 font-medium">{r.workedMinutes == null ? '—' : fmt(r.workedMinutes)}</td>
-                          <td className="py-3.5 pr-2">{r.statusPrimary === 'ABSENT' ? '—' : `${r.lateMinutes}m`}</td>
-                          <td className="py-3.5 pr-2">{r.statusPrimary === 'ABSENT' ? '—' : `${r.overtimeMinutes}m`}</td>
+                          <td className="py-3.5 pr-2">
+                            {r.checkInAt ? `${r.lateMinutes}m` : '—'}
+                          </td>
+                          <td className="py-3.5 pr-2">
+                            {r.checkInAt ? `${r.overtimeMinutes}m` : '—'}
+                          </td>
                           <td className="py-3.5">
                             <StatusChip tone={toneFor(r.statusPrimary)}>
                               {r.statusPrimary}
@@ -547,6 +584,7 @@ export default function DashboardPage() {
         ) : null}
 
         {section === 'schedule' ? <ShiftScheduleTab /> : null}
+        {section === 'exceptions' ? <DayExceptionsTab /> : null}
 
         {section === 'people' ? (
           <Surface>

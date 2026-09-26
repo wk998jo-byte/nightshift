@@ -210,6 +210,20 @@ export function auditActionLabel(action: string): string {
       return 'Schedule copied';
     case 'SCHEDULE_REPEATED':
       return 'Schedule repeated';
+    case 'ROSTER_IMPORTED':
+      return 'Official roster imported';
+    case 'DAY_EXCEPTION_CREATED':
+      return 'Day exception created';
+    case 'DAY_EXCEPTION_UPDATED':
+      return 'Day exception updated';
+    case 'DAY_EXCEPTION_REMOVED':
+      return 'Day exception removed';
+    case 'HOLIDAY_CREATED':
+      return 'Holiday created';
+    case 'HOLIDAY_UPDATED':
+      return 'Holiday updated';
+    case 'ATTENDANCE_CORRECTED':
+      return 'Attendance corrected';
     default:
       return action.replace(/_/g, ' ');
   }

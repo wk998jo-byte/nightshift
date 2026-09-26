@@ -32,6 +32,18 @@ enum AttendanceMethod {
   MANUAL
 }
 
+enum DayExceptionType {
+  HOLIDAY
+  ABSENT
+  NEW
+  SICK_LEAVE
+  UMRA_LEAVE
+  HALF_DAY
+  EMERGENCY_VACATION
+  VACATION
+  RELEASED
+}
+
 model User {
   id           String    @id @default(cuid())
   username     String    @unique
@@ -44,6 +56,7 @@ model User {
   createdAt    DateTime  @default(now())
   auditLogs    AuditLog[]
   adjustments  AttendanceAdjustment[]
+  dayExceptions DayException[]
 }
 
 model Employee {
@@ -67,6 +80,7 @@ model Employee {
   leaves       Leave[]
   devices      Device[]
   supervisedProjects ProjectSupervisor[]
+  dayExceptions DayException[]
 }
 
 model Project {
@@ -132,6 +146,26 @@ model EmployeeShiftAssignment {
 
   @@unique([employeeId, workDate, shiftId])
   @@index([workDate, projectId])
+}
+
+model DayException {
+  id                   String           @id @default(cuid())
+  workDate             String
+  employeeId           String?
+  type                 DayExceptionType
+  reason               String?
+  expectedStartTime    String?
+  expectedEndTime      String?
+  expectedWorkMinutes  Int?
+  createdById          String?
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  employee  Employee? @relation(fields: [employeeId], references: [id])
+  createdBy User?     @relation(fields: [createdById], references: [id])
+
+  @@index([workDate])
+  @@index([employeeId, workDate])
 }
 
 model Leave {

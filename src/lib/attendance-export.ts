@@ -1,9 +1,13 @@
 import { DateTime } from 'luxon';
 import { formatDuration, formatTime, scheduledWindow } from './attendance-calc';
 import { isDemoEmployeeCode, isDemoEmployeeName } from './demo-employee';
-import { isScheduledAbsent } from './schedule-lookup';
 import { classifyShift } from './shift-catalog';
 import { addCalendarDays, getAppTimezone } from './timezone';
+import {
+  evaluateAssignmentDay,
+  halfDayWindow,
+  type DayExceptionRecord,
+} from './day-status';
 
 export const MAX_EXPORT_DAYS = 366;
 export const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -31,6 +35,7 @@ export type ExportRange =
   | { ok: false; error: string };
 
 export type ExportAssignment = {
+  employeeId?: string;
   workDate: string;
   status: string;
   employee: {
@@ -154,7 +159,29 @@ function parseFlags(raw: string | null | undefined): string {
   }
 }
 
-export function buildExportRows(assignments: ExportAssignment[], now = new Date()): ExportRow[] {
+function excusedDashes(identity: {
+  workDate: string;
+  employee: string;
+  bn: string;
+  project: string;
+}, extra: { shift: string; scheduledStart: string; scheduledEnd: string; status: string; flags: string }): ExportRow {
+  return {
+    ...identity,
+    ...extra,
+    checkIn: '—',
+    checkOut: '—',
+    worked: '—',
+    late: '—',
+    earlyLeave: '—',
+    ot: '—',
+  };
+}
+
+export function buildExportRows(
+  assignments: ExportAssignment[],
+  now = new Date(),
+  exceptions: DayExceptionRecord[] = []
+): ExportRow[] {
   const rows: ExportRow[] = [];
   for (const a of assignments) {
     if (a.status !== 'SCHEDULED' && a.status !== 'OFF') continue;
@@ -167,41 +194,87 @@ export function buildExportRows(assignments: ExportAssignment[], now = new Date(
       project: a.project.name,
     };
 
-    if (a.status === 'OFF') {
-      rows.push({
-        ...identity,
-        shift: 'OFF',
-        scheduledStart: '—',
-        scheduledEnd: '—',
-        checkIn: '—',
-        checkOut: '—',
-        worked: '—',
-        late: '—',
-        earlyLeave: '—',
-        ot: '—',
-        status: 'OFF',
-        flags: 'OFF',
-      });
-      continue;
-    }
-
-    const window = scheduledWindow(
+    let window = scheduledWindow(
       a.workDate,
       a.shift.startTime,
       a.shift.endTime,
       a.shift.crossesMidnight
     );
+    const preview = evaluateAssignmentDay({
+      assignmentStatus: a.status,
+      workDate: a.workDate,
+      employeeId: a.employeeId || '',
+      now,
+      scheduledStart: window.scheduledStart,
+      scheduledEnd: window.scheduledEnd,
+      gracePeriodMinutes: a.shift.gracePeriodMinutes,
+      hasCheckIn: false,
+      exceptions,
+    });
+    if (preview.exception?.type === 'HALF_DAY') {
+      window = halfDayWindow(
+        a.workDate,
+        preview.exception,
+        a.shift.startTime,
+        a.shift.endTime,
+        a.shift.crossesMidnight
+      );
+    }
+
     const punch = a.attendance.find((r) => r.checkInAt) ?? null;
     const checkInAt = asDate(punch?.checkInAt);
     const checkOutAt = asDate(punch?.checkOutAt);
+    const day = evaluateAssignmentDay({
+      assignmentStatus: a.status,
+      workDate: a.workDate,
+      employeeId: a.employeeId || '',
+      now,
+      scheduledStart: window.scheduledStart,
+      scheduledEnd: window.scheduledEnd,
+      gracePeriodMinutes: a.shift.gracePeriodMinutes,
+      hasCheckIn: !!checkInAt,
+      exceptions,
+    });
+
+    if (a.status === 'OFF' && !day.exception) {
+      rows.push(
+        excusedDashes(identity, {
+          shift: 'OFF',
+          scheduledStart: '—',
+          scheduledEnd: '—',
+          status: 'OFF',
+          flags: 'OFF',
+        })
+      );
+      continue;
+    }
+
+    if (day.excused && !day.holidayWork && !checkInAt) {
+      rows.push(
+        excusedDashes(identity, {
+          shift: a.status === 'OFF' ? 'OFF' : exportShiftName(a.shift),
+          scheduledStart: a.status === 'OFF' ? '—' : formatTime(window.scheduledStart),
+          scheduledEnd: a.status === 'OFF' ? '—' : formatTime(window.scheduledEnd),
+          status: day.status,
+          flags: day.status,
+        })
+      );
+      continue;
+    }
+
     const base = {
       ...identity,
-      shift: exportShiftName(a.shift),
-      scheduledStart: formatTime(window.scheduledStart),
-      scheduledEnd: formatTime(window.scheduledEnd),
+      shift: a.status === 'OFF' && !checkInAt ? 'OFF' : exportShiftName(a.shift),
+      scheduledStart: a.status === 'OFF' && !checkInAt ? '—' : formatTime(window.scheduledStart),
+      scheduledEnd: a.status === 'OFF' && !checkInAt ? '—' : formatTime(window.scheduledEnd),
     };
 
     if (checkInAt && punch) {
+      const ot = day.holidayWork && punch.workedMinutes != null ? punch.workedMinutes : punch.overtimeMinutes;
+      const status = day.holidayWork ? 'HOLIDAY_WORK' : day.exception && day.excused ? day.status : punch.statusPrimary;
+      const flags = [parseFlags(punch.flags), day.holidayWork ? 'HOLIDAY_WORK' : '', day.exception && day.excused && !day.holidayWork ? day.status : '']
+        .filter(Boolean)
+        .join('|');
       rows.push({
         ...base,
         checkIn: formatTime(checkInAt),
@@ -209,20 +282,13 @@ export function buildExportRows(assignments: ExportAssignment[], now = new Date(
         worked: formatDuration(punch.workedMinutes),
         late: String(punch.lateMinutes),
         earlyLeave: String(punch.earlyLeaveMinutes),
-        ot: String(punch.overtimeMinutes),
-        status: punch.statusPrimary,
-        flags: parseFlags(punch.flags),
+        ot: String(ot),
+        status,
+        flags,
       });
       continue;
     }
 
-    const absent = isScheduledAbsent({
-      status: a.status,
-      hasCheckIn: false,
-      now,
-      scheduledStart: window.scheduledStart,
-      gracePeriodMinutes: a.shift.gracePeriodMinutes,
-    });
     rows.push({
       ...base,
       checkIn: '—',
@@ -231,8 +297,8 @@ export function buildExportRows(assignments: ExportAssignment[], now = new Date(
       late: '—',
       earlyLeave: '—',
       ot: '—',
-      status: absent ? 'ABSENT' : 'SCHEDULED',
-      flags: absent ? 'ABSENT' : 'SCHEDULED',
+      status: day.status,
+      flags: day.status,
     });
   }
 
