@@ -94,11 +94,12 @@ export function isScheduledAbsent(input: {
   hasCheckIn: boolean;
   now: Date;
   scheduledStart: Date;
-  gracePeriodMinutes: number;
+  scheduledEnd: Date;
+  gracePeriodMinutes?: number;
 }): boolean {
   if (input.status !== 'SCHEDULED') return false;
   if (input.hasCheckIn) return false;
-  return isPastCheckInWindow(input.now, input.scheduledStart, input.gracePeriodMinutes);
+  return input.now.getTime() > input.scheduledEnd.getTime();
 }
 
 export const ATTENDANCE_BLOCKS_EDIT =

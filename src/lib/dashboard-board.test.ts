@@ -61,12 +61,13 @@ function asg(partial: Partial<BoardAssignment> & Pick<BoardAssignment, 'id' | 'e
 }
 
 describe('tonight dashboard counts', () => {
-  const now = new Date('2026-09-21T18:00:00.000Z'); // 21:00 Riyadh, after both check-in windows
+  const duringShift = new Date('2026-09-21T18:00:00.000Z'); // 21:00 Riyadh, both shifts still running
+  const afterShiftEnd = new Date('2026-09-22T05:00:00.000Z'); // 08:00 Riyadh, after Shift 1 and Shift 2 end
 
   it('counts only active EMPLOYEE scheduled assignments', () => {
     const board = buildTonightBoard({
       workDate: '2026-09-21',
-      now,
+      now: afterShiftEnd,
       assignments: [
         asg({
           id: 'a',
@@ -108,7 +109,7 @@ describe('tonight dashboard counts', () => {
   it('excludes OFF, NO_SCHEDULE, and inactive demo from scheduled and absent', () => {
     const board = buildTonightBoard({
       workDate: '2026-09-21',
-      now,
+      now: afterShiftEnd,
       assignments: [
         asg({
           id: 'off',
@@ -134,7 +135,7 @@ describe('tonight dashboard counts', () => {
     const checkInAt = new Date('2026-09-21T12:40:00.000Z');
     const board = buildTonightBoard({
       workDate: '2026-09-21',
-      now,
+      now: duringShift,
       assignments: [
         asg({
           id: 'a',
@@ -170,8 +171,8 @@ describe('tonight dashboard counts', () => {
     assert.equal(board.currentlyWorking.length, 1);
     assert.equal(board.currentlyWorking[0].code, '71326');
     assert.match(board.currentlyWorking[0].shiftLabel, /Shift 1/);
-    assert.equal(board.absent, 1);
-    assert.equal(board.rows.some((r) => r.statusPrimary === 'ABSENT' && r.employeeCode === '71343'), true);
+    assert.equal(board.absent, 0);
+    assert.equal(board.rows.some((r) => r.statusPrimary === 'ABSENT'), false);
   });
 
   it('filters by shift and status', () => {
@@ -205,23 +206,23 @@ describe('tonight dashboard counts', () => {
     assert.equal(boardWorkDate(afterMidnight), '2026-09-21');
   });
 
-  it('does not mark a scheduled employee absent before the check-in window ends', () => {
+  it('does not mark a scheduled employee absent while the shift is still running', () => {
     const board = buildTonightBoard({
       workDate: '2026-09-21',
-      now: new Date('2026-09-21T13:00:00.000Z'), // 16:00 Riyadh; Shift 2 starts 19:30
+      now: new Date('2026-09-21T13:00:00.000Z'), // 16:00 Riyadh, Shift 1 is active
       assignments: [
         asg({
-          id: 'b',
-          employeeId: 'b',
+          id: 'a',
+          employeeId: 'a',
           status: 'SCHEDULED',
-          employee: person('b', { name: 'Real B', code: '71343' }),
-          shift: shift2,
+          employee: person('a', { name: 'Real A', code: '71326' }),
+          shift: shift1,
         }),
       ],
     });
     assert.equal(board.scheduled.length, 1);
     assert.equal(board.absent, 0);
-    assert.equal(board.rows.length, 0);
+    assert.equal(board.rows.some((r) => r.statusPrimary === 'ABSENT'), false);
   });
 });
 

@@ -1,12 +1,15 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { BrandButton, Logo } from '@/components/ui';
-import { loginLandingPath, shouldStayOnLoginAfterLogout } from '@/lib/session-policy';
+import {
+  completeAuthenticatedLogin,
+  hardNavigateReplace,
+  loginLandingPath,
+  shouldStayOnLoginAfterLogout,
+} from '@/lib/session-policy';
 
 export default function LoginPage() {
-  const router = useRouter();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -19,10 +22,10 @@ export default function LoginPage() {
       .then((r) => r.json())
       .then((d) => {
         const next = loginLandingPath(d.user, search);
-        if (next) router.replace(next);
+        if (next) hardNavigateReplace(next);
       })
       .catch(() => undefined);
-  }, [router]);
+  }, []);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -41,8 +44,18 @@ export default function LoginPage() {
         setError(data.error || 'Login failed');
         return;
       }
-      if (data.role === 'EMPLOYEE') router.push('/app');
-      else router.push('/dashboard');
+      const verified = await completeAuthenticatedLogin({
+        role: data.role,
+        verifyMe: async () => {
+          const meRes = await fetch('/api/auth/me', { credentials: 'include', cache: 'no-store' });
+          return meRes.json();
+        },
+      });
+      if (!verified.ok) {
+        setError(verified.error);
+        return;
+      }
+      hardNavigateReplace(verified.path);
     } catch {
       setError('Connection unavailable. Try again.');
     } finally {

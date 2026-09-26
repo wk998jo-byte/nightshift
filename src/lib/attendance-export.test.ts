@@ -116,7 +116,8 @@ describe('export filename', () => {
 });
 
 describe('export rows', () => {
-  const afterWindow = new Date('2026-09-21T13:00:00.000Z'); // 16:00 Riyadh
+  const afterWindow = new Date('2026-09-21T13:00:00.000Z'); // 16:00 Riyadh, Shift 1 still running
+  const afterShiftEnd = new Date('2026-09-22T00:31:00.000Z'); // 03:31 Riyadh next day
   const beforeWindow = new Date('2026-09-21T10:00:00.000Z'); // 13:00 Riyadh
 
   it('one-day export includes a punched employee', () => {
@@ -153,7 +154,7 @@ describe('export rows', () => {
     assert.notEqual(rows[0].checkIn, '—');
   });
 
-  it('scheduled employee with no attendance and expired shift => ABSENT', () => {
+  it('scheduled employee with no attendance during an active shift => SCHEDULED', () => {
     const rows = buildExportRows(
       [
         asg({
@@ -163,6 +164,21 @@ describe('export rows', () => {
         }),
       ],
       afterWindow
+    );
+    assert.equal(rows[0].status, 'SCHEDULED');
+    assert.notEqual(rows[0].status, 'ABSENT');
+  });
+
+  it('scheduled employee with no attendance and expired shift => ABSENT', () => {
+    const rows = buildExportRows(
+      [
+        asg({
+          workDate: '2026-09-21',
+          employee: person('Turki Daher M AlShammari', '71378'),
+          shift: shift1,
+        }),
+      ],
+      afterShiftEnd
     );
     assert.equal(rows[0].status, 'ABSENT');
     assert.equal(rows[0].checkIn, '—');

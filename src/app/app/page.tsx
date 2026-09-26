@@ -6,7 +6,7 @@ import { BrandButton, EmployeeAvatar, Logo, StatusChip, Surface } from '@/compon
 import { lateMinutesAfterGrace } from '@/lib/attendance-calc';
 import { getBrowserDeviceId } from '@/lib/browser-device-id';
 import { startQrScanner, stopMediaStream, type BarcodeDetectorLike } from '@/lib/qr-scanner';
-import { completeLogout } from '@/lib/session-policy';
+import { completeLogout, employeeTodayFetchInit } from '@/lib/session-policy';
 
 type Timing = {
   phase: 'early' | 'on_time' | 'late' | 'in_shift';
@@ -111,7 +111,7 @@ export default function EmployeeAppPage() {
   const scanRef = useRef<{ stop: () => void } | null>(null);
 
   const load = useCallback(async () => {
-    const res = await fetch('/api/me/today');
+    const res = await fetch('/api/me/today', employeeTodayFetchInit());
     if (res.status === 401) {
       router.replace('/login');
       return;

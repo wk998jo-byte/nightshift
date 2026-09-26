@@ -9,6 +9,7 @@ import {
 } from './day-status';
 import { scheduledWindow } from './attendance-calc';
 import { buildTonightBoard, type BoardAssignment } from './dashboard-board';
+import { buildExportRows } from './attendance-export';
 
 process.env.TZ = 'UTC';
 process.env.APP_TIMEZONE = 'Asia/Riyadh';
@@ -26,6 +27,7 @@ function day(partial: Partial<Parameters<typeof evaluateAssignmentDay>[0]> = {})
     employeeId: 'e1',
     now: after,
     scheduledStart: window.scheduledStart,
+    scheduledEnd: window.scheduledEnd,
     gracePeriodMinutes: 5,
     hasCheckIn: false,
     exceptions: [],
@@ -85,7 +87,7 @@ describe('day exceptions', () => {
     assert.equal(isAutomaticWeekendOff(workDate), false);
     assert.equal(isAutomaticWeekendOff(friday), false);
     const saturdayScheduled = day({ workDate, assignmentStatus: 'SCHEDULED' });
-    assert.equal(saturdayScheduled.status, 'ABSENT');
+    assert.equal(saturdayScheduled.status, 'SCHEDULED');
     assert.notEqual(saturdayScheduled.status, 'OFF');
     const fridayWindow = scheduledWindow(friday, '15:30', '03:30', true);
     const fridayAfter = DateTime.fromISO(`${friday}T18:00:00`, { zone: 'Asia/Riyadh' }).toJSDate();
@@ -95,12 +97,17 @@ describe('day exceptions', () => {
       employeeId: 'e1',
       now: fridayAfter,
       scheduledStart: fridayWindow.scheduledStart,
+      scheduledEnd: fridayWindow.scheduledEnd,
       gracePeriodMinutes: 5,
       hasCheckIn: false,
       exceptions: [],
     });
-    assert.equal(fridayDay.status, 'ABSENT');
+    assert.equal(fridayDay.status, 'SCHEDULED');
     assert.notEqual(fridayDay.status, 'OFF');
+    const afterEnd = DateTime.fromISO(`${workDate}T03:31:00`, { zone: 'Asia/Riyadh' }).plus({ days: 1 }).toJSDate();
+    const saturdayAfterEnd = day({ now: afterEnd });
+    assert.equal(saturdayAfterEnd.status, 'ABSENT');
+    assert.notEqual(saturdayAfterEnd.status, 'OFF');
   });
 
   it('Half Day uses the configured expected window', () => {
@@ -134,7 +141,9 @@ describe('day exceptions', () => {
   });
 
   it('unresolved PI does not silently excuse absence', () => {
+    const afterEnd = DateTime.fromISO(`${workDate}T03:31:00`, { zone: 'Asia/Riyadh' }).plus({ days: 1 }).toJSDate();
     const result = day({
+      now: afterEnd,
       exceptions: [],
     });
     assert.equal(result.isAbsent, true);
@@ -209,5 +218,65 @@ describe('tonight board exceptions', () => {
     assert.equal(board.rows[0].overtimeMinutes, 720);
     assert.equal(board.overtime, 1);
     assert.equal(board.absent, 0);
+  });
+});
+
+describe('dashboard and export share absence results', () => {
+  const employee = {
+    id: 'e1',
+    fullName: 'Abdulaziz Abdullah H AlZahrani',
+    employeeCode: '71326',
+    badgeNumber: '71326',
+    isActive: true,
+    user: { role: 'EMPLOYEE', isActive: true },
+  };
+  const assignment: BoardAssignment = {
+    id: 'a1',
+    employeeId: 'e1',
+    workDate,
+    status: 'SCHEDULED',
+    employee,
+    project: { id: 'p1', name: 'Riyadh Night Site', locationLabel: 'Riyadh' },
+    shift: {
+      id: 's1',
+      name: 'Night Shift 1',
+      startTime: '15:30',
+      endTime: '03:30',
+      crossesMidnight: true,
+      gracePeriodMinutes: 5,
+    },
+    attendance: [],
+  };
+  const exportAsg = {
+    employeeId: 'e1',
+    workDate,
+    status: 'SCHEDULED',
+    employee: {
+      fullName: employee.fullName,
+      employeeCode: employee.employeeCode,
+      badgeNumber: employee.badgeNumber,
+      isActive: true,
+      user: employee.user,
+    },
+    project: { name: 'Riyadh Night Site' },
+    shift: assignment.shift,
+    attendance: [],
+  };
+
+  it('16:00 with no punch is SCHEDULED on dashboard and export', () => {
+    const now = DateTime.fromISO(`${workDate}T16:00:00`, { zone: 'Asia/Riyadh' }).toJSDate();
+    const board = buildTonightBoard({ workDate, now, assignments: [assignment] });
+    const rows = buildExportRows([exportAsg], now);
+    assert.equal(board.absent, 0);
+    assert.equal(rows[0].status, 'SCHEDULED');
+    assert.notEqual(rows[0].status, 'ABSENT');
+  });
+
+  it('after scheduled end with no punch is ABSENT on dashboard and export', () => {
+    const now = DateTime.fromISO(`${workDate}T03:31:00`, { zone: 'Asia/Riyadh' }).plus({ days: 1 }).toJSDate();
+    const board = buildTonightBoard({ workDate, now, assignments: [assignment] });
+    const rows = buildExportRows([exportAsg], now);
+    assert.equal(board.absent, 1);
+    assert.equal(rows[0].status, 'ABSENT');
   });
 });

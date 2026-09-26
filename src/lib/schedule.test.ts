@@ -333,14 +333,55 @@ describe('check-in schedule rules', () => {
 
 describe('absence uses assignments only', () => {
   const start = utc('2026-09-21T12:30:00.000Z');
+  const end = utc('2026-09-22T00:30:00.000Z');
 
-  it('scheduled employee without attendance after window is absent', () => {
+  it('Shift 1 15:36 and 16:00 with no check-in are not ABSENT', () => {
     assert.equal(
       isScheduledAbsent({
         status: 'SCHEDULED',
         hasCheckIn: false,
-        now: utc('2026-09-21T12:40:00.000Z'),
+        now: utc('2026-09-21T12:36:00.000Z'),
         scheduledStart: start,
+        scheduledEnd: end,
+        gracePeriodMinutes: 5,
+      }),
+      false
+    );
+    assert.equal(
+      isScheduledAbsent({
+        status: 'SCHEDULED',
+        hasCheckIn: false,
+        now: utc('2026-09-21T13:00:00.000Z'),
+        scheduledStart: start,
+        scheduledEnd: end,
+        gracePeriodMinutes: 5,
+      }),
+      false
+    );
+  });
+
+  it('Shift 1 03:29 next day with no check-in is not ABSENT', () => {
+    assert.equal(
+      isScheduledAbsent({
+        status: 'SCHEDULED',
+        hasCheckIn: false,
+        now: utc('2026-09-22T00:29:00.000Z'),
+        scheduledStart: start,
+        scheduledEnd: end,
+        gracePeriodMinutes: 5,
+      }),
+      false
+    );
+  });
+
+  it('scheduled employee without attendance after shift end is absent', () => {
+    assert.equal(
+      isScheduledAbsent({
+        status: 'SCHEDULED',
+        hasCheckIn: false,
+        now: utc('2026-09-22T00:31:00.000Z'),
+        scheduledStart: start,
+        scheduledEnd: end,
         gracePeriodMinutes: 5,
       }),
       true
@@ -356,7 +397,7 @@ describe('absence uses assignments only', () => {
           },
         ],
         checkedInIds: new Set(),
-        now: utc('2026-09-21T12:40:00.000Z'),
+        now: utc('2026-09-22T00:31:00.000Z'),
       }),
       1
     );
@@ -367,8 +408,9 @@ describe('absence uses assignments only', () => {
       isScheduledAbsent({
         status: 'OFF',
         hasCheckIn: false,
-        now: utc('2026-09-21T12:40:00.000Z'),
+        now: utc('2026-09-22T00:31:00.000Z'),
         scheduledStart: start,
+        scheduledEnd: end,
         gracePeriodMinutes: 5,
       }),
       false

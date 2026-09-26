@@ -357,6 +357,7 @@ export function countAbsent(input: {
         hasCheckIn: false,
         now: input.now,
         scheduledStart: window.scheduledStart,
+        scheduledEnd: window.scheduledEnd,
         gracePeriodMinutes: a.shift.gracePeriodMinutes,
       })
     ) {

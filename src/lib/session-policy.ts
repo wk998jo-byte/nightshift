@@ -78,6 +78,42 @@ export function loginLandingPath(
   return user.role === 'EMPLOYEE' ? '/app' : '/dashboard';
 }
 
+export const SESSION_VERIFY_ERROR =
+  'Session could not be established. Please reopen this page in Safari and try again.';
+
+export function postLoginHardPath(role: string): '/app' | '/dashboard' {
+  return role === 'EMPLOYEE' ? '/app' : '/dashboard';
+}
+
+export function employeeTodayFetchInit(): RequestInit {
+  return { credentials: 'include', cache: 'no-store' };
+}
+
+export function todayNoStoreHeaders(): { 'Cache-Control': string } {
+  return authNoStoreHeaders();
+}
+
+export type SessionVerifyResult =
+  | { ok: true; path: '/app' | '/dashboard' }
+  | { ok: false; error: string };
+
+export async function completeAuthenticatedLogin(input: {
+  role: string;
+  verifyMe: () => Promise<{ user?: { role?: string } | null } | null>;
+}): Promise<SessionVerifyResult> {
+  try {
+    const me = await input.verifyMe();
+    if (!me?.user) return { ok: false, error: SESSION_VERIFY_ERROR };
+    return { ok: true, path: postLoginHardPath(input.role) };
+  } catch {
+    return { ok: false, error: SESSION_VERIFY_ERROR };
+  }
+}
+
+export function hardNavigateReplace(path: string) {
+  window.location.replace(path);
+}
+
 export async function completeLogout(
   fetchLogout: () => Promise<{ ok: boolean }>
 ): Promise<{ ok: true; redirectTo: string } | { ok: false; error: string }> {

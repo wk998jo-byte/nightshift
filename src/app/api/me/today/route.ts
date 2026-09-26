@@ -4,18 +4,20 @@ import { prisma } from '@/lib/db';
 import { formatDuration, formatTime } from '@/lib/attendance-calc';
 import { getTonightAssignment } from '@/lib/schedule';
 import { getShiftTiming } from '@/lib/schedule-timing';
+import { todayNoStoreHeaders } from '@/lib/session-policy';
 
 export async function GET() {
+  const headers = todayNoStoreHeaders();
   const auth = await getSession();
   if (!auth || !auth.employeeId) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers });
   }
 
   const employee = await prisma.employee.findUnique({
     where: { id: auth.employeeId },
     include: { defaultProject: true },
   });
-  if (!employee) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  if (!employee) return NextResponse.json({ error: 'Not found' }, { status: 404, headers });
 
   const open = await prisma.attendanceRecord.findFirst({
     where: {
@@ -124,5 +126,5 @@ export async function GET() {
       statusPrimary: h.statusPrimary,
       flags: JSON.parse(h.flags || '[]'),
     })),
-  });
+  }, { headers });
 }

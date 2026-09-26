@@ -101,7 +101,7 @@ export function evaluateAssignmentDay(input: {
   employeeId: string;
   now: Date;
   scheduledStart: Date;
-  scheduledEnd?: Date;
+  scheduledEnd: Date;
   gracePeriodMinutes: number;
   hasCheckIn: boolean;
   exceptions: DayExceptionRecord[];
@@ -130,16 +130,14 @@ export function evaluateAssignmentDay(input: {
       if (input.hasCheckIn) {
         return { status: 'HALF_DAY', isAbsent: false, excused: true, exception, holidayWork: false };
       }
-      const absent = input.scheduledEnd
-        ? input.now.getTime() >
-          input.scheduledEnd.getTime() + input.gracePeriodMinutes * 60000
-        : isScheduledAbsent({
-            status: 'SCHEDULED',
-            hasCheckIn: false,
-            now: input.now,
-            scheduledStart: input.scheduledStart,
-            gracePeriodMinutes: input.gracePeriodMinutes,
-          });
+      const absent = isScheduledAbsent({
+        status: 'SCHEDULED',
+        hasCheckIn: false,
+        now: input.now,
+        scheduledStart: input.scheduledStart,
+        scheduledEnd: input.scheduledEnd,
+        gracePeriodMinutes: input.gracePeriodMinutes,
+      });
       return {
         status: absent ? 'ABSENT' : 'HALF_DAY',
         isAbsent: absent,
@@ -179,6 +177,7 @@ export function evaluateAssignmentDay(input: {
     hasCheckIn: false,
     now: input.now,
     scheduledStart: input.scheduledStart,
+    scheduledEnd: input.scheduledEnd,
     gracePeriodMinutes: input.gracePeriodMinutes,
   });
   return {

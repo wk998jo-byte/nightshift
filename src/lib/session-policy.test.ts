@@ -6,15 +6,20 @@ import {
   SESSION_COOKIE,
   SESSION_JWT_EXPIRATION,
   SESSION_MAX_AGE_SECONDS,
+  SESSION_VERIFY_ERROR,
   authNoStoreHeaders,
   clearSessionCookie,
+  completeAuthenticatedLogin,
   completeLogout,
+  employeeTodayFetchInit,
   isActiveAuthUser,
   loginLandingPath,
   meResponseUser,
+  postLoginHardPath,
   sessionClearCookieOptions,
   sessionSetCookieOptions,
   shouldStayOnLoginAfterLogout,
+  todayNoStoreHeaders,
   type CookieWriter,
   type SessionCookieBase,
 } from './session-policy';
@@ -158,5 +163,61 @@ describe('login auto-enter', () => {
 
   it('auth endpoints use Cache-Control no-store', () => {
     assert.deepEqual(authNoStoreHeaders(), { 'Cache-Control': AUTH_NO_STORE });
+    assert.deepEqual(todayNoStoreHeaders(), { 'Cache-Control': 'no-store' });
+  });
+});
+
+describe('post-login hard navigation', () => {
+  it('successful employee login uses hard /app navigation', async () => {
+    assert.equal(postLoginHardPath('EMPLOYEE'), '/app');
+    const result = await completeAuthenticatedLogin({
+      role: 'EMPLOYEE',
+      verifyMe: async () => ({ user: { role: 'EMPLOYEE' } }),
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.path, '/app');
+  });
+
+  it('successful admin login uses hard /dashboard navigation', async () => {
+    assert.equal(postLoginHardPath('ADMIN'), '/dashboard');
+    const result = await completeAuthenticatedLogin({
+      role: 'ADMIN',
+      verifyMe: async () => ({ user: { role: 'ADMIN' } }),
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.path, '/dashboard');
+  });
+
+  it('post-login /api/auth/me verification is required', async () => {
+    let verified = false;
+    await completeAuthenticatedLogin({
+      role: 'EMPLOYEE',
+      verifyMe: async () => {
+        verified = true;
+        return { user: { role: 'EMPLOYEE' } };
+      },
+    });
+    assert.equal(verified, true);
+  });
+
+  it('failed session verification stays on login with error', async () => {
+    const missing = await completeAuthenticatedLogin({
+      role: 'EMPLOYEE',
+      verifyMe: async () => ({ user: null }),
+    });
+    assert.equal(missing.ok, false);
+    if (!missing.ok) assert.equal(missing.error, SESSION_VERIFY_ERROR);
+    const failed = await completeAuthenticatedLogin({
+      role: 'EMPLOYEE',
+      verifyMe: async () => {
+        throw new Error('network');
+      },
+    });
+    assert.equal(failed.ok, false);
+    if (!failed.ok) assert.match(failed.error, /Safari/);
+  });
+
+  it('/api/me/today fetch uses credentials include + no-store', () => {
+    assert.deepEqual(employeeTodayFetchInit(), { credentials: 'include', cache: 'no-store' });
   });
 });
