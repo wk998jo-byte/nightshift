@@ -11,7 +11,12 @@ import {
   OFFICIAL_ROSTER_ROWS,
   OFFICIAL_ROSTER_START,
 } from './roster-official';
-import { buildRosterPlan, planOfficialRoster, summarizePlan } from './roster-import';
+import {
+  applyOfficialRoster,
+  buildRosterPlan,
+  planOfficialRoster,
+  summarizePlan,
+} from './roster-import';
 import { catalogFromShifts } from './shift-catalog';
 
 process.env.TZ = 'UTC';
@@ -49,25 +54,62 @@ const employees = [
   { id: 'e-71378', employeeCode: '71378' },
 ];
 
-function mockDb(existing: any[] = [], writes = { created: 0, updated: 0 }) {
-  return {
+function mockDb(
+  existing: any[] = [],
+  writes = { created: 0, updated: 0 },
+  hooks: {
+    applyFindMany?: (employeeId: string, workDate: string) => any[] | undefined;
+    applyAttendance?: (assignmentId: string) => any;
+  } = {}
+) {
+  const live = [...existing];
+  const db: any = {
     writes,
     employee: { findMany: async () => employees },
     project: { findUnique: async () => ({ id: 'p1', code: 'HQ-01' }) },
     shift: { findMany: async () => [shift1, shift2] },
     employeeShiftAssignment: {
-      findMany: async () => existing,
-      create: async () => {
-        writes.created += 1;
-        return { id: `c${writes.created}` };
+      findMany: async (args?: any) => {
+        const emp = args?.where?.employeeId;
+        const date = args?.where?.workDate;
+        if (typeof emp === 'string' && typeof date === 'string') {
+          const override = hooks.applyFindMany?.(emp, date);
+          if (override) return override;
+          return live.filter((row) => row.employeeId === emp && row.workDate === date);
+        }
+        return live;
       },
-      update: async () => {
+      create: async (args: any) => {
+        writes.created += 1;
+        const row = { id: `c${writes.created}`, ...args.data, attendance: [] };
+        live.push(row);
+        return row;
+      },
+      update: async (args: any) => {
         writes.updated += 1;
-        return { id: `u${writes.updated}` };
+        return { id: args.where.id, ...args.data };
       },
     },
-    attendanceRecord: { findFirst: async () => null },
+    attendanceRecord: {
+      findFirst: async (args?: any) => {
+        const assignmentId = args?.where?.assignmentId;
+        if (assignmentId && hooks.applyAttendance) return hooks.applyAttendance(assignmentId);
+        return null;
+      },
+    },
   };
+  db.$transaction = async (fn: (tx: any) => Promise<unknown>) => {
+    const snap = { created: writes.created, updated: writes.updated, live: [...live] };
+    try {
+      return await fn(db);
+    } catch (err) {
+      writes.created = snap.created;
+      writes.updated = snap.updated;
+      live.splice(0, live.length, ...snap.live);
+      throw err;
+    }
+  };
+  return db;
 }
 
 describe('official roster CSV', () => {
@@ -139,11 +181,110 @@ describe('roster importer', () => {
   it('apply on empty DB creates all 291 official rows', async () => {
     const writes = { created: 0, updated: 0 };
     const db = mockDb([], writes);
-    const { applyOfficialRoster } = await import('./roster-import');
     const plan = await applyOfficialRoster(db, officialCsv());
     assert.equal(plan.ok, true);
     assert.equal(writes.created, 291);
     assert.equal(writes.updated, 0);
+  });
+
+  it('two existing assignments same employee/date => import fails safely with zero writes', async () => {
+    const existing = [
+      {
+        id: 'dup-1',
+        employeeId: 'e-71326',
+        workDate: '2026-09-26',
+        shiftId: 's1',
+        status: 'SCHEDULED',
+        shift: shift1,
+        attendance: [],
+      },
+      {
+        id: 'dup-2',
+        employeeId: 'e-71326',
+        workDate: '2026-09-26',
+        shiftId: 's2',
+        status: 'SCHEDULED',
+        shift: shift2,
+        attendance: [],
+      },
+    ];
+    const writes = { created: 0, updated: 0 };
+    const db = mockDb(existing, writes);
+    const planned = await planOfficialRoster(db, officialCsv());
+    assert.equal(planned.ok, false);
+    assert.ok(
+      planned.errors.some(
+        (err) => /71326/.test(err) && /2026-09-26/.test(err) && /Duplicate assignments/.test(err)
+      )
+    );
+    const applied = await applyOfficialRoster(db, officialCsv());
+    assert.equal(applied.ok, false);
+    assert.ok(applied.errors.some((err) => /71326/.test(err) && /2026-09-26/.test(err)));
+    assert.equal(writes.created, 0);
+    assert.equal(writes.updated, 0);
+  });
+
+  it('attendance appearing between planning and applying does not update', async () => {
+    const existing = [
+      {
+        id: 'old-71343',
+        employeeId: 'e-71343',
+        workDate: '2026-10-01',
+        shiftId: 's1',
+        status: 'SCHEDULED',
+        shift: shift1,
+        attendance: [],
+      },
+    ];
+    const writes = { created: 0, updated: 0 };
+    const db = mockDb(existing, writes, {
+      applyFindMany: (employeeId, workDate) => {
+        if (employeeId === 'e-71343' && workDate === '2026-10-01') {
+          return [
+            {
+              ...existing[0],
+              attendance: [{ checkInAt: new Date('2026-10-01T16:40:00.000Z') }],
+            },
+          ];
+        }
+        return undefined;
+      },
+    });
+    const applied = await applyOfficialRoster(db, officialCsv());
+    assert.equal(applied.ok, true);
+    assert.equal(writes.updated, 0);
+    assert.ok(applied.locked.some((row) => row.employeeCode === '71343' && row.workDate === '2026-10-01'));
+    assert.equal(
+      applied.updated.some((row) => row.employeeCode === '71343' && row.workDate === '2026-10-01'),
+      false
+    );
+  });
+
+  it('concurrent existing assignment prevents duplicate create', async () => {
+    const writes = { created: 0, updated: 0 };
+    const concurrent = {
+      id: 'concurrent',
+      employeeId: 'e-71326',
+      workDate: '2026-09-26',
+      shiftId: 's1',
+      status: 'SCHEDULED',
+      shift: shift1,
+      attendance: [],
+    };
+    const db = mockDb([], writes, {
+      applyFindMany: (employeeId, workDate) => {
+        if (employeeId === 'e-71326' && workDate === '2026-09-26') return [concurrent];
+        return undefined;
+      },
+    });
+    const applied = await applyOfficialRoster(db, officialCsv());
+    assert.equal(applied.ok, true);
+    assert.equal(
+      applied.created.some((row) => row.employeeCode === '71326' && row.workDate === '2026-09-26'),
+      false
+    );
+    assert.equal(writes.created, 290);
+    assert.equal(writes.updated, 1);
   });
 
   it('creates missing assignments and is idempotent on rerun', async () => {
