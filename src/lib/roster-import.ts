@@ -28,7 +28,20 @@ export type RosterImportDb = {
     update: (args?: any) => Promise<any>;
   };
   attendanceRecord: { findFirst: (args?: any) => Promise<any> };
-  $transaction?: (fn: (tx: RosterImportDb) => Promise<unknown>) => Promise<unknown>;
+  $transaction?: (
+    fn: (tx: RosterImportDb) => Promise<unknown>,
+    options?: RosterImportTransactionOptions
+  ) => Promise<unknown>;
+};
+
+export type RosterImportTransactionOptions = {
+  maxWait?: number;
+  timeout?: number;
+};
+
+export const ROSTER_IMPORT_TX_OPTIONS: RosterImportTransactionOptions = {
+  maxWait: 10000,
+  timeout: 120000,
 };
 
 export class RosterImportConflict extends Error {
@@ -362,7 +375,7 @@ export async function applyOfficialRoster(
           )!;
           await applyOne(tx, row, action);
         }
-      });
+      }, ROSTER_IMPORT_TX_OPTIONS);
     } else {
       for (const action of writes) {
         const row = parsed.rows.find(

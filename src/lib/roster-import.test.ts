@@ -15,6 +15,7 @@ import {
   applyOfficialRoster,
   buildRosterPlan,
   planOfficialRoster,
+  ROSTER_IMPORT_TX_OPTIONS,
   summarizePlan,
 } from './roster-import';
 import { catalogFromShifts } from './shift-catalog';
@@ -98,7 +99,8 @@ function mockDb(
       },
     },
   };
-  db.$transaction = async (fn: (tx: any) => Promise<unknown>) => {
+  db.$transaction = async (fn: (tx: any) => Promise<unknown>, options?: { maxWait?: number; timeout?: number }) => {
+    db.transactionOptions = options;
     const snap = { created: writes.created, updated: writes.updated, live: [...live] };
     try {
       return await fn(db);
@@ -185,6 +187,24 @@ describe('roster importer', () => {
     assert.equal(plan.ok, true);
     assert.equal(writes.created, 291);
     assert.equal(writes.updated, 0);
+    assert.deepEqual(db.transactionOptions, { maxWait: 10000, timeout: 120000 });
+    assert.deepEqual(db.transactionOptions, ROSTER_IMPORT_TX_OPTIONS);
+  });
+
+  it('uses one interactive transaction with extended Prisma timeout', async () => {
+    const writes = { created: 0, updated: 0 };
+    const db = mockDb([], writes);
+    let calls = 0;
+    const original = db.$transaction;
+    db.$transaction = async (fn: any, options?: { maxWait?: number; timeout?: number }) => {
+      calls += 1;
+      return original(fn, options);
+    };
+    await applyOfficialRoster(db, officialCsv());
+    assert.equal(calls, 1);
+    assert.equal(ROSTER_IMPORT_TX_OPTIONS.maxWait, 10000);
+    assert.equal(ROSTER_IMPORT_TX_OPTIONS.timeout, 120000);
+    assert.deepEqual(db.transactionOptions, { maxWait: 10000, timeout: 120000 });
   });
 
   it('two existing assignments same employee/date => import fails safely with zero writes', async () => {
