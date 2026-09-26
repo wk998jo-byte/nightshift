@@ -55,52 +55,85 @@ const employees = [
   { id: 'e-71378', employeeCode: '71378' },
 ];
 
+function mockWrites() {
+  return {
+    created: 0,
+    updated: 0,
+    createCalls: 0,
+    createManyCalls: 0,
+    updateCalls: 0,
+    updateManyCalls: 0,
+    findManyCalls: 0,
+    txFindManyCalls: 0,
+    perRowFindManyCalls: 0,
+  };
+}
+
 function mockDb(
   existing: any[] = [],
-  writes = { created: 0, updated: 0 },
+  writes = mockWrites(),
   hooks: {
-    applyFindMany?: (employeeId: string, workDate: string) => any[] | undefined;
-    applyAttendance?: (assignmentId: string) => any;
+    txExisting?: any[];
   } = {}
 ) {
   const live = [...existing];
   const db: any = {
     writes,
+    inTransaction: false,
     employee: { findMany: async () => employees },
     project: { findUnique: async () => ({ id: 'p1', code: 'HQ-01' }) },
     shift: { findMany: async () => [shift1, shift2] },
     employeeShiftAssignment: {
       findMany: async (args?: any) => {
+        writes.findManyCalls += 1;
+        if (db.inTransaction) writes.txFindManyCalls += 1;
         const emp = args?.where?.employeeId;
         const date = args?.where?.workDate;
-        if (typeof emp === 'string' && typeof date === 'string') {
-          const override = hooks.applyFindMany?.(emp, date);
-          if (override) return override;
-          return live.filter((row) => row.employeeId === emp && row.workDate === date);
+        if (typeof emp === 'string' || typeof date === 'string') {
+          writes.perRowFindManyCalls += 1;
         }
-        return live;
+        const source = db.inTransaction && hooks.txExisting ? hooks.txExisting : live;
+        let rows = source;
+        if (Array.isArray(emp?.in)) rows = rows.filter((row: any) => emp.in.includes(row.employeeId));
+        if (date?.gte) rows = rows.filter((row: any) => row.workDate >= date.gte);
+        if (date?.lte) rows = rows.filter((row: any) => row.workDate <= date.lte);
+        if (Array.isArray(date?.in)) rows = rows.filter((row: any) => date.in.includes(row.workDate));
+        return rows;
       },
       create: async (args: any) => {
+        writes.createCalls += 1;
         writes.created += 1;
         const row = { id: `c${writes.created}`, ...args.data, attendance: [] };
         live.push(row);
         return row;
       },
+      createMany: async (args: any) => {
+        writes.createManyCalls += 1;
+        const data = args.data || [];
+        writes.created += data.length;
+        for (const row of data) live.push({ id: `c${live.length + 1}`, ...row, attendance: [] });
+        return { count: data.length };
+      },
       update: async (args: any) => {
+        writes.updateCalls += 1;
         writes.updated += 1;
         return { id: args.where.id, ...args.data };
       },
-    },
-    attendanceRecord: {
-      findFirst: async (args?: any) => {
-        const assignmentId = args?.where?.assignmentId;
-        if (assignmentId && hooks.applyAttendance) return hooks.applyAttendance(assignmentId);
-        return null;
+      updateMany: async (args: any) => {
+        writes.updateManyCalls += 1;
+        const ids = args?.where?.id?.in || [];
+        writes.updated += ids.length;
+        return { count: ids.length };
       },
     },
+    attendanceRecord: { findFirst: async () => null },
   };
-  db.$transaction = async (fn: (tx: any) => Promise<unknown>, options?: { maxWait?: number; timeout?: number }) => {
+  db.$transaction = async (
+    fn: (tx: any) => Promise<unknown>,
+    options?: { maxWait?: number; timeout?: number; isolationLevel?: string }
+  ) => {
     db.transactionOptions = options;
+    db.inTransaction = true;
     const snap = { created: writes.created, updated: writes.updated, live: [...live] };
     try {
       return await fn(db);
@@ -109,6 +142,8 @@ function mockDb(
       writes.updated = snap.updated;
       live.splice(0, live.length, ...snap.live);
       throw err;
+    } finally {
+      db.inTransaction = false;
     }
   };
   return db;
@@ -161,7 +196,7 @@ describe('official roster CSV', () => {
 
 describe('roster importer', () => {
   it('dry-run against the official CSV writes nothing and reports expected totals', async () => {
-    const writes = { created: 0, updated: 0 };
+    const writes = mockWrites();
     const db = mockDb([], writes);
     const plan = await planOfficialRoster(db, officialCsv());
     assert.equal(plan.ok, true);
@@ -181,22 +216,25 @@ describe('roster importer', () => {
   });
 
   it('apply on empty DB creates all 291 official rows', async () => {
-    const writes = { created: 0, updated: 0 };
+    const writes = mockWrites();
     const db = mockDb([], writes);
     const plan = await applyOfficialRoster(db, officialCsv());
     assert.equal(plan.ok, true);
     assert.equal(writes.created, 291);
     assert.equal(writes.updated, 0);
-    assert.deepEqual(db.transactionOptions, { maxWait: 10000, timeout: 120000 });
+    assert.equal(writes.createManyCalls, 1);
+    assert.equal(writes.createCalls, 0);
+    assert.equal(writes.txFindManyCalls, 1);
+    assert.equal(writes.perRowFindManyCalls, 0);
     assert.deepEqual(db.transactionOptions, ROSTER_IMPORT_TX_OPTIONS);
   });
 
-  it('uses one interactive transaction with extended Prisma timeout', async () => {
-    const writes = { created: 0, updated: 0 };
+  it('uses one Serializable interactive transaction with extended Prisma timeout', async () => {
+    const writes = mockWrites();
     const db = mockDb([], writes);
     let calls = 0;
     const original = db.$transaction;
-    db.$transaction = async (fn: any, options?: { maxWait?: number; timeout?: number }) => {
+    db.$transaction = async (fn: any, options?: { maxWait?: number; timeout?: number; isolationLevel?: string }) => {
       calls += 1;
       return original(fn, options);
     };
@@ -204,7 +242,14 @@ describe('roster importer', () => {
     assert.equal(calls, 1);
     assert.equal(ROSTER_IMPORT_TX_OPTIONS.maxWait, 10000);
     assert.equal(ROSTER_IMPORT_TX_OPTIONS.timeout, 120000);
-    assert.deepEqual(db.transactionOptions, { maxWait: 10000, timeout: 120000 });
+    assert.equal(ROSTER_IMPORT_TX_OPTIONS.isolationLevel, 'Serializable');
+    assert.deepEqual(db.transactionOptions, {
+      maxWait: 10000,
+      timeout: 120000,
+      isolationLevel: 'Serializable',
+    });
+    assert.equal(writes.createManyCalls, 1);
+    assert.equal(writes.txFindManyCalls, 1);
   });
 
   it('two existing assignments same employee/date => import fails safely with zero writes', async () => {
@@ -228,7 +273,7 @@ describe('roster importer', () => {
         attendance: [],
       },
     ];
-    const writes = { created: 0, updated: 0 };
+    const writes = mockWrites();
     const db = mockDb(existing, writes);
     const planned = await planOfficialRoster(db, officialCsv());
     assert.equal(planned.ok, false);
@@ -256,23 +301,23 @@ describe('roster importer', () => {
         attendance: [],
       },
     ];
-    const writes = { created: 0, updated: 0 };
+    const writes = mockWrites();
     const db = mockDb(existing, writes, {
-      applyFindMany: (employeeId, workDate) => {
-        if (employeeId === 'e-71343' && workDate === '2026-10-01') {
-          return [
-            {
-              ...existing[0],
-              attendance: [{ checkInAt: new Date('2026-10-01T16:40:00.000Z') }],
-            },
-          ];
-        }
-        return undefined;
-      },
+      txExisting: [
+        {
+          ...existing[0],
+          attendance: [{ checkInAt: new Date('2026-10-01T16:40:00.000Z') }],
+        },
+      ],
     });
     const applied = await applyOfficialRoster(db, officialCsv());
     assert.equal(applied.ok, true);
     assert.equal(writes.updated, 0);
+    assert.equal(writes.updateCalls, 0);
+    assert.equal(writes.updateManyCalls, 0);
+    assert.equal(writes.createManyCalls, 1);
+    assert.equal(writes.createCalls, 0);
+    assert.equal(writes.txFindManyCalls, 1);
     assert.ok(applied.locked.some((row) => row.employeeCode === '71343' && row.workDate === '2026-10-01'));
     assert.equal(
       applied.updated.some((row) => row.employeeCode === '71343' && row.workDate === '2026-10-01'),
@@ -281,7 +326,7 @@ describe('roster importer', () => {
   });
 
   it('concurrent existing assignment prevents duplicate create', async () => {
-    const writes = { created: 0, updated: 0 };
+    const writes = mockWrites();
     const concurrent = {
       id: 'concurrent',
       employeeId: 'e-71326',
@@ -291,12 +336,7 @@ describe('roster importer', () => {
       shift: shift1,
       attendance: [],
     };
-    const db = mockDb([], writes, {
-      applyFindMany: (employeeId, workDate) => {
-        if (employeeId === 'e-71326' && workDate === '2026-09-26') return [concurrent];
-        return undefined;
-      },
-    });
+    const db = mockDb([], writes, { txExisting: [concurrent] });
     const applied = await applyOfficialRoster(db, officialCsv());
     assert.equal(applied.ok, true);
     assert.equal(
@@ -305,6 +345,82 @@ describe('roster importer', () => {
     );
     assert.equal(writes.created, 290);
     assert.equal(writes.updated, 1);
+    assert.equal(writes.createManyCalls, 1);
+    assert.equal(writes.createCalls, 0);
+    assert.equal(writes.updateManyCalls, 1);
+    assert.equal(writes.updateCalls, 0);
+    assert.equal(writes.txFindManyCalls, 1);
+  });
+
+  it('duplicate live employee/date aborts the entire transaction', async () => {
+    const writes = mockWrites();
+    const db = mockDb([], writes, {
+      txExisting: [
+        {
+          id: 'dup-1',
+          employeeId: 'e-71326',
+          workDate: '2026-09-26',
+          shiftId: 's1',
+          status: 'SCHEDULED',
+          shift: shift1,
+          attendance: [],
+        },
+        {
+          id: 'dup-2',
+          employeeId: 'e-71326',
+          workDate: '2026-09-26',
+          shiftId: 's2',
+          status: 'SCHEDULED',
+          shift: shift2,
+          attendance: [],
+        },
+      ],
+    });
+    const applied = await applyOfficialRoster(db, officialCsv());
+    assert.equal(applied.ok, false);
+    assert.ok(applied.errors.some((err) => /71326/.test(err) && /2026-09-26/.test(err)));
+    assert.equal(writes.created, 0);
+    assert.equal(writes.updated, 0);
+    assert.equal(writes.createManyCalls, 0);
+    assert.equal(writes.txFindManyCalls, 1);
+  });
+
+  it('existing same choice is unchanged and existing different choice without attendance is updated', async () => {
+    const parsed = parseRosterCsv(officialCsv());
+    const matching = parsed.rows
+      .filter((row) => !(row.employeeCode === '71343' && row.workDate === '2026-10-01'))
+      .map((row, i) => ({
+        id: `m${i}`,
+        employeeId: employees.find((e) => e.employeeCode === row.employeeCode)!.id,
+        workDate: row.workDate,
+        shiftId: row.choice === 'SHIFT_2' ? 's2' : 's1',
+        status: row.choice === 'OFF' ? 'OFF' : 'SCHEDULED',
+        shift: row.choice === 'SHIFT_2' ? shift2 : shift1,
+        attendance: [],
+      }));
+    matching.push({
+      id: 'mismatch',
+      employeeId: 'e-71343',
+      workDate: '2026-10-01',
+      shiftId: 's1',
+      status: 'SCHEDULED',
+      shift: shift1,
+      attendance: [],
+    });
+    const writes = mockWrites();
+    const db = mockDb(matching, writes);
+    const applied = await applyOfficialRoster(db, officialCsv());
+    assert.equal(applied.ok, true);
+    assert.equal(applied.unchanged.length, 290);
+    assert.equal(applied.updated.length, 1);
+    assert.equal(applied.created.length, 0);
+    assert.equal(applied.updated[0].employeeCode, '71343');
+    assert.equal(applied.updated[0].workDate, '2026-10-01');
+    assert.equal(writes.createManyCalls, 0);
+    assert.equal(writes.createCalls, 0);
+    assert.equal(writes.updateManyCalls, 1);
+    assert.equal(writes.updated, 1);
+    assert.equal(writes.txFindManyCalls, 1);
   });
 
   it('creates missing assignments and is idempotent on rerun', async () => {

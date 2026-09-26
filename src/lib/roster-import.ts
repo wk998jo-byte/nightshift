@@ -1,8 +1,10 @@
-import { AssignmentStatus } from '@prisma/client';
+import { AssignmentStatus, Prisma } from '@prisma/client';
 import { catalogFromShifts, shiftForChoice, type ShiftCatalog } from './shift-catalog';
 import { choiceForAssignment } from './shift-catalog';
 import {
   OFFICIAL_PROJECT_CODE,
+  OFFICIAL_ROSTER_END,
+  OFFICIAL_ROSTER_START,
   type OfficialChoice,
   type RosterCsvRow,
 } from './roster-official';
@@ -24,8 +26,10 @@ export type RosterImportDb = {
   shift: { findMany: (args?: any) => Promise<any[]> };
   employeeShiftAssignment: {
     findMany: (args?: any) => Promise<any[]>;
-    create: (args?: any) => Promise<any>;
-    update: (args?: any) => Promise<any>;
+    create?: (args?: any) => Promise<any>;
+    createMany: (args?: any) => Promise<any>;
+    update?: (args?: any) => Promise<any>;
+    updateMany: (args?: any) => Promise<any>;
   };
   attendanceRecord: { findFirst: (args?: any) => Promise<any> };
   $transaction?: (
@@ -37,11 +41,13 @@ export type RosterImportDb = {
 export type RosterImportTransactionOptions = {
   maxWait?: number;
   timeout?: number;
+  isolationLevel?: Prisma.TransactionIsolationLevel;
 };
 
 export const ROSTER_IMPORT_TX_OPTIONS: RosterImportTransactionOptions = {
   maxWait: 10000,
   timeout: 120000,
+  isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
 };
 
 export class RosterImportConflict extends Error {
@@ -215,14 +221,42 @@ export async function loadRosterContext(db: RosterImportDb, rows: RosterCsvRow[]
   ]);
   const catalog = catalogFromShifts(shifts);
   const employeeIds = employees.map((e) => e.id);
-  const dates = [...new Set(rows.map((r) => r.workDate))];
-  const existing = employeeIds.length
-    ? await db.employeeShiftAssignment.findMany({
-        where: { employeeId: { in: employeeIds }, workDate: { in: dates } },
-        include: { shift: true, attendance: { select: { checkInAt: true } } },
-      })
-    : [];
+  const existing = await loadLiveAssignments(db, employeeIds);
   return { employees, project, catalog, existing };
+}
+
+export async function loadLiveAssignments(db: RosterImportDb, employeeIds: string[]) {
+  if (!employeeIds.length) return [];
+  return db.employeeShiftAssignment.findMany({
+    where: {
+      employeeId: { in: employeeIds },
+      workDate: { gte: OFFICIAL_ROSTER_START, lte: OFFICIAL_ROSTER_END },
+    },
+    include: { shift: true, attendance: { select: { checkInAt: true } } },
+  });
+}
+
+function assignmentWrite(input: {
+  employeeId: string;
+  workDate: string;
+  choice: OfficialChoice;
+  projectId: string;
+  catalog: ShiftCatalog;
+}) {
+  const shiftId =
+    input.choice === 'OFF' ? input.catalog.shift1!.id : shiftForChoice(input.catalog, input.choice)!.id;
+  return {
+    employeeId: input.employeeId,
+    projectId: input.projectId,
+    shiftId,
+    workDate: input.workDate,
+    status: input.choice === 'OFF' ? AssignmentStatus.OFF : AssignmentStatus.SCHEDULED,
+  };
+}
+
+function isPrismaConflict(err: unknown): boolean {
+  const code = err && typeof err === 'object' && 'code' in err ? String((err as { code?: string }).code) : '';
+  return code === 'P2034' || code === 'P2028';
 }
 
 export async function planOfficialRoster(db: RosterImportDb, csvText: string): Promise<RosterPlan> {
@@ -259,130 +293,70 @@ export async function applyOfficialRoster(
   });
   if (!plan.ok || !ctx.project || !ctx.catalog.shift1 || !ctx.catalog.shift2) return plan;
 
-  const byCode = new Map(ctx.employees.map((e) => [e.employeeCode, e]));
-  const result: RosterPlan = {
-    ...plan,
-    created: [...plan.created],
-    updated: [...plan.updated],
-    unchanged: [...plan.unchanged],
-    locked: [...plan.locked],
-    errors: [...plan.errors],
-  };
+  const employeeIds = ctx.employees.map((e) => e.id);
+  const projectId = ctx.project.id;
+  let result: RosterPlan = plan;
 
-  const relocate = (
-    from: PlannedRosterAction[],
-    action: PlannedRosterAction,
-    to: PlannedRosterAction[],
-    next: PlannedRosterAction['action']
-  ) => {
-    const idx = from.findIndex((row) => row.employeeId === action.employeeId && row.workDate === action.workDate);
-    if (idx >= 0) from.splice(idx, 1);
-    to.push({ ...action, action: next });
-  };
-
-  const liveAssignments = async (tx: RosterImportDb, employeeId: string, workDate: string) => {
-    return tx.employeeShiftAssignment.findMany({
-      where: { employeeId, workDate },
-      include: { shift: true, attendance: { select: { checkInAt: true } } },
+  const applyBatched = async (tx: RosterImportDb) => {
+    const live = await loadLiveAssignments(tx, employeeIds);
+    const livePlan = buildRosterPlan({
+      rows: parsed.rows,
+      parseErrors: parsed.errors,
+      employees: ctx.employees,
+      projectId,
+      catalog: ctx.catalog,
+      existing: live,
     });
-  };
-
-  const liveHasCheckIn = async (tx: RosterImportDb, assignment: ExistingAssignment) => {
-    if (hasCheckIn(assignment)) return true;
-    const punch = await tx.attendanceRecord.findFirst({
-      where: { assignmentId: assignment.id, checkInAt: { not: null } },
-    });
-    return !!punch;
-  };
-
-  const applyOne = async (tx: RosterImportDb, row: RosterCsvRow, action: PlannedRosterAction) => {
-    const employee = byCode.get(row.employeeCode)!;
-    const shiftId = row.choice === 'OFF' ? ctx.catalog.shift1!.id : shiftForChoice(ctx.catalog, row.choice)!.id;
-    const status = row.choice === 'OFF' ? AssignmentStatus.OFF : AssignmentStatus.SCHEDULED;
-    const projectId = ctx.project!.id;
-    const live = await liveAssignments(tx, employee.id, row.workDate);
-    if (live.length > 1) {
-      throw new RosterImportConflict(
-        `Duplicate assignments already exist for employee ${action.employeeCode} on ${row.workDate} (${live.length} rows). Import refuses to guess which is authoritative.`
-      );
+    if (!livePlan.ok) {
+      throw new RosterImportConflict(livePlan.errors[0] || 'Live roster state is not safe to import');
     }
 
-    if (action.action === 'create') {
-      if (live.length === 1) {
-        const current = live[0];
-        const currentChoice = choiceForAssignment(
-          current.shift || { id: current.shiftId, startTime: '', endTime: '' },
-          current.status,
-          ctx.catalog
-        );
-        if (currentChoice === row.choice) {
-          relocate(result.created, action, result.unchanged, 'unchanged');
-          return;
-        }
-        if (await liveHasCheckIn(tx, current)) {
-          relocate(result.created, action, result.locked, 'locked');
-          return;
-        }
-        await tx.employeeShiftAssignment.update({
-          where: { id: current.id },
-          data: { shiftId, status, projectId },
-        });
-        relocate(result.created, action, result.updated, 'update');
-        return;
-      }
-      await tx.employeeShiftAssignment.create({
-        data: { employeeId: employee.id, projectId, shiftId, workDate: row.workDate, status },
-      });
-      return;
-    }
-
-    if (action.action === 'update') {
-      if (live.length === 0) {
-        await tx.employeeShiftAssignment.create({
-          data: { employeeId: employee.id, projectId, shiftId, workDate: row.workDate, status },
-        });
-        relocate(result.updated, action, result.created, 'create');
-        return;
-      }
-      const current = live[0];
-      if (await liveHasCheckIn(tx, current)) {
-        relocate(result.updated, action, result.locked, 'locked');
-        return;
-      }
-      const currentChoice = choiceForAssignment(
-        current.shift || { id: current.shiftId, startTime: '', endTime: '' },
-        current.status,
-        ctx.catalog
-      );
-      if (currentChoice === row.choice) {
-        relocate(result.updated, action, result.unchanged, 'unchanged');
-        return;
-      }
-      await tx.employeeShiftAssignment.update({
-        where: { id: current.id },
-        data: { shiftId, status, projectId },
+    const existingByKey = uniqueExistingByEmployeeDate(live);
+    if (livePlan.created.length) {
+      await tx.employeeShiftAssignment.createMany({
+        data: livePlan.created.map((action) =>
+          assignmentWrite({
+            employeeId: action.employeeId,
+            workDate: action.workDate,
+            choice: action.choice,
+            projectId,
+            catalog: ctx.catalog,
+          })
+        ),
       });
     }
+
+    const updateGroups = new Map<string, { ids: string[]; shiftId: string; status: AssignmentStatus }>();
+    for (const action of livePlan.updated) {
+      const existing = existingByKey.get(employeeDateKey(action.employeeId, action.workDate));
+      if (!existing) continue;
+      const data = assignmentWrite({
+        employeeId: action.employeeId,
+        workDate: action.workDate,
+        choice: action.choice,
+        projectId,
+        catalog: ctx.catalog,
+      });
+      const key = `${data.shiftId}:${data.status}`;
+      const group = updateGroups.get(key) ?? { ids: [], shiftId: data.shiftId, status: data.status };
+      group.ids.push(existing.id);
+      updateGroups.set(key, group);
+    }
+    for (const group of updateGroups.values()) {
+      await tx.employeeShiftAssignment.updateMany({
+        where: { id: { in: group.ids } },
+        data: { shiftId: group.shiftId, status: group.status, projectId },
+      });
+    }
+
+    result = livePlan;
   };
 
-  const writes = [...result.created, ...result.updated];
   try {
     if (db.$transaction) {
-      await db.$transaction(async (tx) => {
-        for (const action of writes) {
-          const row = parsed.rows.find(
-            (r) => r.employeeCode === action.employeeCode && r.workDate === action.workDate
-          )!;
-          await applyOne(tx, row, action);
-        }
-      }, ROSTER_IMPORT_TX_OPTIONS);
+      await db.$transaction(applyBatched, ROSTER_IMPORT_TX_OPTIONS);
     } else {
-      for (const action of writes) {
-        const row = parsed.rows.find(
-          (r) => r.employeeCode === action.employeeCode && r.workDate === action.workDate
-        )!;
-        await applyOne(db, row, action);
-      }
+      await applyBatched(db);
     }
   } catch (err) {
     if (err instanceof RosterImportConflict) {
@@ -390,6 +364,15 @@ export async function applyOfficialRoster(
         ...plan,
         ok: false,
         errors: [...plan.errors, err.message],
+        created: [],
+        updated: [],
+      };
+    }
+    if (isPrismaConflict(err)) {
+      return {
+        ...plan,
+        ok: false,
+        errors: [...plan.errors, 'Roster import transaction conflict. No partial writes were kept. Retry the entire import.'],
         created: [],
         updated: [],
       };
