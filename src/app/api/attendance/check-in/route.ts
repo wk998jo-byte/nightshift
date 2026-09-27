@@ -4,12 +4,13 @@ import { prisma } from '@/lib/db';
 import { isInsideRadius } from '@/lib/geo';
 import { calculateAttendance } from '@/lib/attendance-calc';
 import { getTonightAssignment } from '@/lib/schedule';
-import { checkInDeniedReason } from '@/lib/schedule-lookup';
 import { getShiftTiming } from '@/lib/schedule-timing';
 import { fingerprintFromRequest, hashToken, verifyQrToken } from '@/lib/security';
 import { observePunchDevice, recordDeviceWarnings } from '@/lib/device-security';
 import { AttendanceMethod } from '@prisma/client';
 import { checkInBlockedBy, withShiftCheckoutWindow } from '@/lib/open-attendance';
+import { evaluateNormalQrCheckIn, exceptionForEmployee } from '@/lib/attendance-state';
+import type { DayExceptionRecord } from '@/lib/day-status';
 
 type Body = {
   token?: string;
@@ -113,16 +114,54 @@ export async function POST(req: NextRequest) {
   }
 
   // Check-in is allowed only for an admin-assigned schedule. QR does not pick a shift.
-  const lookup = await getTonightAssignment(employee.id, new Date());
-  const denied = checkInDeniedReason(lookup.kind);
-  if (denied) {
-    return NextResponse.json({ error: denied.error, code: denied.code }, { status: 403 });
-  }
-  if (!lookup.assignment || !lookup.window) {
-    return NextResponse.json({ error: 'No shift scheduled. Contact supervisor.' }, { status: 403 });
+  const now = new Date();
+  const lookup = await getTonightAssignment(employee.id, now);
+  if (!lookup.assignment && lookup.kind !== 'OFF_DAY') {
+    return NextResponse.json({ error: 'No shift scheduled. Contact supervisor.', code: 'NO_SCHEDULE' }, { status: 403 });
   }
 
   const assignment = lookup.assignment;
+  const exceptionRows = assignment
+    ? await prisma.dayException.findMany({
+        where: {
+          workDate: assignment.workDate,
+          OR: [{ employeeId: employee.id }, { employeeId: null, type: 'HOLIDAY' }],
+        },
+      })
+    : [];
+  const exceptions: DayExceptionRecord[] = exceptionRows.map((row) => ({
+    workDate: row.workDate,
+    employeeId: row.employeeId,
+    type: row.type as DayExceptionRecord['type'],
+    expectedStartTime: row.expectedStartTime,
+    expectedEndTime: row.expectedEndTime,
+    expectedWorkMinutes: row.expectedWorkMinutes,
+  }));
+  const exception = assignment ? exceptionForEmployee(assignment.workDate, employee.id, exceptions) : null;
+  const decision = evaluateNormalQrCheckIn({
+    scheduleKind: lookup.kind,
+    now,
+    workDate: assignment?.workDate || lookup.workDate,
+    startTime: assignment?.shift.startTime || '15:30',
+    endTime: assignment?.shift.endTime || '03:30',
+    crossesMidnight: assignment?.shift.crossesMidnight ?? true,
+    checkinWindowBeforeMinutes: assignment?.shift.checkinWindowBeforeMinutes,
+    exception,
+  });
+  if (!decision.ok) {
+    return NextResponse.json(
+      {
+        error: decision.error,
+        code: decision.code,
+        minutesUntilOpen: decision.minutesUntilOpen,
+        opensAt: decision.opensAt,
+      },
+      { status: 403 }
+    );
+  }
+  if (!assignment) {
+    return NextResponse.json({ error: 'No shift scheduled. Contact supervisor.', code: 'NO_SCHEDULE' }, { status: 403 });
+  }
   if (assignment.projectId !== project.id) {
     return NextResponse.json(
       { error: 'QR is for a different project than your schedule' },
@@ -131,8 +170,7 @@ export async function POST(req: NextRequest) {
   }
 
   const shift = assignment.shift;
-  const { scheduledStart, scheduledEnd } = lookup.window;
-  const now = new Date();
+  const { scheduledStart, scheduledEnd } = decision;
 
   // Allow early start — no hard block before shift start
   const timingAtPunch = getShiftTiming(

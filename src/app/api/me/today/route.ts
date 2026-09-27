@@ -7,9 +7,16 @@ import { getShiftTiming } from '@/lib/schedule-timing';
 import { todayNoStoreHeaders } from '@/lib/session-policy';
 import {
   employeeOpenShiftFromRecords,
+  isStaleMissingCheckout,
   previousMissingCheckoutMeta,
   withShiftCheckoutWindow,
 } from '@/lib/open-attendance';
+import {
+  effectiveScheduledWindow,
+  evaluateNormalQrCheckIn,
+  exceptionForEmployee,
+} from '@/lib/attendance-state';
+import type { DayExceptionRecord } from '@/lib/day-status';
 
 export async function GET() {
   const headers = todayNoStoreHeaders();
@@ -37,33 +44,81 @@ export async function GET() {
   const open = employeeOpenShiftFromRecords(classified, now);
   const previousMissingCheckout = previousMissingCheckoutMeta(classified, now);
 
-  const lookup = await getTonightAssignment(employee.id, new Date());
+  const lookup = await getTonightAssignment(employee.id, now);
 
   let schedule = null;
   let timing = null;
   let scheduleState: 'SCHEDULED' | 'OFF_DAY' | 'NO_SCHEDULE' = lookup.kind;
+  let checkInEligibility: {
+    allowed: boolean;
+    code: string | null;
+    error: string | null;
+    minutesUntilOpen?: number;
+    opensAt?: string;
+  } = { allowed: false, code: lookup.kind === 'NO_SCHEDULE' ? 'NO_SCHEDULE' : lookup.kind === 'OFF_DAY' ? 'OFF_DAY' : null, error: null };
 
-  if (lookup.kind === 'SCHEDULED' && lookup.assignment && lookup.window) {
-    const assignment = lookup.assignment;
-    const window = lookup.window;
-    timing = getShiftTiming(
-      new Date(),
-      window.scheduledStart,
-      window.scheduledEnd,
-      assignment.shift.gracePeriodMinutes
-    );
-    schedule = {
-      workDate: assignment.workDate,
-      project: assignment.project,
-      shift: {
-        name: assignment.shift.name,
-        startTime: assignment.shift.startTime,
-        endTime: assignment.shift.endTime,
-        gracePeriodMinutes: assignment.shift.gracePeriodMinutes,
+  if (lookup.assignment) {
+    const exceptionRows = await prisma.dayException.findMany({
+      where: {
+        workDate: lookup.assignment.workDate,
+        OR: [{ employeeId: employee.id }, { employeeId: null, type: 'HOLIDAY' }],
       },
-      scheduledStart: window.scheduledStart.toISOString(),
-      scheduledEnd: window.scheduledEnd.toISOString(),
-    };
+    });
+    const exceptions: DayExceptionRecord[] = exceptionRows.map((row) => ({
+      workDate: row.workDate,
+      employeeId: row.employeeId,
+      type: row.type as DayExceptionRecord['type'],
+      expectedStartTime: row.expectedStartTime,
+      expectedEndTime: row.expectedEndTime,
+      expectedWorkMinutes: row.expectedWorkMinutes,
+    }));
+    const exception = exceptionForEmployee(lookup.assignment.workDate, employee.id, exceptions);
+    const window = effectiveScheduledWindow({
+      workDate: lookup.assignment.workDate,
+      startTime: lookup.assignment.shift.startTime,
+      endTime: lookup.assignment.shift.endTime,
+      crossesMidnight: lookup.assignment.shift.crossesMidnight,
+      exception,
+    });
+    const decision = evaluateNormalQrCheckIn({
+      scheduleKind: lookup.kind,
+      now,
+      workDate: lookup.assignment.workDate,
+      startTime: lookup.assignment.shift.startTime,
+      endTime: lookup.assignment.shift.endTime,
+      crossesMidnight: lookup.assignment.shift.crossesMidnight,
+      checkinWindowBeforeMinutes: lookup.assignment.shift.checkinWindowBeforeMinutes,
+      exception,
+    });
+    if (lookup.kind === 'SCHEDULED' && window) {
+      timing = getShiftTiming(
+        now,
+        window.scheduledStart,
+        window.scheduledEnd,
+        lookup.assignment.shift.gracePeriodMinutes
+      );
+      schedule = {
+        workDate: lookup.assignment.workDate,
+        project: lookup.assignment.project,
+        shift: {
+          name: lookup.assignment.shift.name,
+          startTime: lookup.assignment.shift.startTime,
+          endTime: lookup.assignment.shift.endTime,
+          gracePeriodMinutes: lookup.assignment.shift.gracePeriodMinutes,
+        },
+        scheduledStart: window.scheduledStart.toISOString(),
+        scheduledEnd: window.scheduledEnd.toISOString(),
+      };
+    }
+    checkInEligibility = decision.ok
+      ? { allowed: true, code: null, error: null }
+      : {
+          allowed: false,
+          code: decision.code,
+          error: decision.error,
+          minutesUntilOpen: decision.minutesUntilOpen,
+          opensAt: decision.opensAt,
+        };
   }
 
   const history = await prisma.attendanceRecord.findMany({
@@ -122,19 +177,33 @@ export async function GET() {
           ? 'You are scheduled OFF today.'
           : null,
     timing,
+    checkInEligibility,
     previousMissingCheckout,
     serverNow: new Date().toISOString(),
-    history: history.map((h) => ({
-      id: h.id,
-      project: h.project.name,
-      checkInAt: h.checkInAt,
-      checkOutAt: h.checkOutAt,
-      workedMinutes: h.workedMinutes,
-      lateMinutes: h.lateMinutes,
-      earlyLeaveMinutes: h.earlyLeaveMinutes,
-      overtimeMinutes: h.overtimeMinutes,
-      statusPrimary: h.statusPrimary,
-      flags: JSON.parse(h.flags || '[]'),
-    })),
+    history: history.map((h) => {
+      const stale =
+        h.checkInAt &&
+        !h.checkOutAt &&
+        isStaleMissingCheckout(
+          {
+            checkInAt: h.checkInAt,
+            checkOutAt: h.checkOutAt,
+            scheduledEnd: h.scheduledEnd,
+          },
+          now
+        );
+      return {
+        id: h.id,
+        project: h.project.name,
+        checkInAt: h.checkInAt,
+        checkOutAt: h.checkOutAt,
+        workedMinutes: stale ? null : h.workedMinutes,
+        lateMinutes: h.lateMinutes,
+        earlyLeaveMinutes: stale ? null : h.earlyLeaveMinutes,
+        overtimeMinutes: stale ? null : h.overtimeMinutes,
+        statusPrimary: stale ? 'MISSING_CHECKOUT' : h.statusPrimary,
+        flags: stale ? ['MISSING_CHECKOUT'] : JSON.parse(h.flags || '[]'),
+      };
+    }),
   }, { headers });
 }

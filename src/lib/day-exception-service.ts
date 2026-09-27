@@ -50,7 +50,8 @@ function isTime(value: string | null | undefined): boolean {
 
 export function planDayException(
   draft: DayExceptionDraft,
-  existing: { id: string; type: string; employeeId: string | null; reason?: string | null } | null
+  existing: { id: string; type: string; employeeId: string | null; reason?: string | null } | null,
+  context?: { hasCheckIn?: boolean }
 ): DayExceptionPlan {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(draft.workDate)) {
     return { ok: false, error: 'Invalid workDate', status: 400 };
@@ -66,6 +67,14 @@ export function planDayException(
   }
   if (companyHoliday && draft.type !== 'HOLIDAY') {
     return { ok: false, error: 'Company-wide exception must be Holiday', status: 400 };
+  }
+
+  if (draft.type === 'ABSENT' && context?.hasCheckIn) {
+    return {
+      ok: false,
+      error: 'Attendance already exists for this date. Use attendance correction instead of marking ABSENT.',
+      status: 409,
+    };
   }
 
   if (draft.type === 'HALF_DAY') {

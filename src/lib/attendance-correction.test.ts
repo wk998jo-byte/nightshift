@@ -431,6 +431,13 @@ describe('day exception planning', () => {
       null
     );
     assert.equal(half.ok, false);
+    const absentWithPunch = planDayException(
+      { workDate: '2026-09-26', scope: 'EMPLOYEE', type: 'ABSENT', employeeId: 'e1' },
+      null,
+      { hasCheckIn: true }
+    );
+    assert.equal(absentWithPunch.ok, false);
+    if (!absentWithPunch.ok) assert.equal(absentWithPunch.status, 409);
     const halfOk = planDayException(
       {
         workDate: '2026-09-26',

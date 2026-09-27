@@ -48,6 +48,13 @@ type Today = {
   timing: Timing | null;
   scheduleState?: 'SCHEDULED' | 'OFF_DAY' | 'NO_SCHEDULE';
   scheduleMessage?: string | null;
+  checkInEligibility?: {
+    allowed: boolean;
+    code: string | null;
+    error: string | null;
+    minutesUntilOpen?: number;
+    opensAt?: string;
+  };
   previousMissingCheckout?: {
     attendanceId: string;
     workDate: string;
@@ -404,7 +411,9 @@ export default function EmployeeAppPage() {
                     </p>
                     <p className="mt-1 text-sm text-sky-700">متبقي على بداية الشفت</p>
                     <p className="mt-3 text-xs text-slate-500">
-                      تقدر تسوي Start Shift الحين · يُسجّل كحضور مبكر
+                      {data.checkInEligibility?.code === 'CHECKIN_TOO_EARLY'
+                        ? `START SHIFT opens in ${data.checkInEligibility.minutesUntilOpen ?? liveUntil} minutes`
+                        : 'تقدر تسوي Start Shift الحين · يُسجّل كحضور مبكر'}
                     </p>
                   </div>
                 ) : timingPhase === 'late' ? (
@@ -463,14 +472,26 @@ export default function EmployeeAppPage() {
                     امسح QR الموقع للبدء
                   </p>
                   <h2 className="mb-5 text-center text-lg font-bold text-slate-900">
-                    {timingPhase === 'early'
-                      ? 'بدء مبكر للشفت'
-                      : timingPhase === 'late'
-                        ? 'تسجيل حضور متأخر'
-                        : 'جاهز لبدء الشفت'}
+                    {data.checkInEligibility?.code === 'SHIFT_ENDED'
+                      ? 'This shift has already ended.'
+                      : data.checkInEligibility?.code === 'EXCUSED_DAY'
+                        ? 'An approved day status exists. Contact your supervisor if you are required to work.'
+                        : data.checkInEligibility?.code === 'CHECKIN_TOO_EARLY'
+                          ? 'Check-in window is not open yet'
+                        : timingPhase === 'early'
+                          ? 'بدء مبكر للشفت'
+                          : timingPhase === 'late'
+                            ? 'تسجيل حضور متأخر'
+                            : 'جاهز لبدء الشفت'}
                   </h2>
+                  {data.checkInEligibility?.code === 'CHECKIN_TOO_EARLY' &&
+                  data.checkInEligibility.minutesUntilOpen != null ? (
+                    <p className="mb-4 text-center text-sm text-slate-500">
+                      START SHIFT opens in {data.checkInEligibility.minutesUntilOpen} minutes
+                    </p>
+                  ) : null}
                   <BrandButton
-                    disabled={busy}
+                    disabled={busy || data.checkInEligibility?.allowed === false}
                     onClick={() => void startCamera('in')}
                     className="w-full !rounded-2xl !py-5 !text-lg"
                   >

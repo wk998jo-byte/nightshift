@@ -68,6 +68,15 @@ describe('day exceptions', () => {
     }
   });
 
+  it('explicit Absent does not override real attendance', () => {
+    const result = day({
+      hasCheckIn: true,
+      exceptions: [{ workDate, employeeId: 'e1', type: 'ABSENT' }],
+    });
+    assert.equal(result.isAbsent, false);
+    assert.notEqual(result.status, 'ABSENT');
+  });
+
   it('explicit Absent works', () => {
     const result = day({
       now: before,

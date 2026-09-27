@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession, writeAudit } from '@/lib/auth';
 import { prisma } from '@/lib/db';
-import { calculateAttendance, scheduledWindow } from '@/lib/attendance-calc';
+import { calculateAttendance } from '@/lib/attendance-calc';
 import { getTonightAssignment } from '@/lib/schedule';
 import { checkInDeniedReason } from '@/lib/schedule-lookup';
+import { effectiveScheduledWindow, exceptionForEmployee, SHIFT_ENDED_CODE, SHIFT_ENDED_ERROR } from '@/lib/attendance-state';
+import type { DayExceptionRecord } from '@/lib/day-status';
 import { AttendanceMethod } from '@prisma/client';
 import {
   checkInBlockedBy,
@@ -73,12 +75,34 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Open shift already exists' }, { status: 409 });
     }
 
-    const { scheduledStart, scheduledEnd } = scheduledWindow(
+    const exceptionRows = await prisma.dayException.findMany({
+      where: {
+        workDate: assignment.workDate,
+        OR: [{ employeeId }, { employeeId: null, type: 'HOLIDAY' }],
+      },
+    });
+    const exception = exceptionForEmployee(
       assignment.workDate,
-      assignment.shift.startTime,
-      assignment.shift.endTime,
-      assignment.shift.crossesMidnight
+      employeeId,
+      exceptionRows.map((row) => ({
+        workDate: row.workDate,
+        employeeId: row.employeeId,
+        type: row.type as DayExceptionRecord['type'],
+        expectedStartTime: row.expectedStartTime,
+        expectedEndTime: row.expectedEndTime,
+        expectedWorkMinutes: row.expectedWorkMinutes,
+      }))
     );
+    const { scheduledStart, scheduledEnd } = effectiveScheduledWindow({
+      workDate: assignment.workDate,
+      startTime: assignment.shift.startTime,
+      endTime: assignment.shift.endTime,
+      crossesMidnight: assignment.shift.crossesMidnight,
+      exception,
+    });
+    if (at.getTime() > scheduledEnd.getTime()) {
+      return NextResponse.json({ error: SHIFT_ENDED_ERROR, code: SHIFT_ENDED_CODE }, { status: 403 });
+    }
 
     const calc = calculateAttendance({
       scheduledStart,

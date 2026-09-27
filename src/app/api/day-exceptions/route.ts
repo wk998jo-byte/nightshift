@@ -57,6 +57,13 @@ export async function POST(req: NextRequest) {
         where: { workDate, employeeId: null, type: 'HOLIDAY' },
       });
 
+  const existingAttendance = employeeId
+    ? await prisma.attendanceRecord.findFirst({
+        where: { employeeId, assignment: { workDate }, checkInAt: { not: null } },
+        select: { id: true, checkInAt: true },
+      })
+    : null;
+
   const plan = planDayException(
     {
       workDate,
@@ -68,7 +75,8 @@ export async function POST(req: NextRequest) {
       expectedEndTime,
       expectedWorkMinutes: Number.isFinite(expectedWorkMinutes) ? expectedWorkMinutes : null,
     },
-    existing
+    existing,
+    { hasCheckIn: !!existingAttendance?.checkInAt }
   );
   if (!plan.ok) return NextResponse.json({ error: plan.error }, { status: plan.status });
 

@@ -116,6 +116,8 @@ describe('grace period late minutes (15:30 start, 5 min grace)', () => {
     });
     const timing = getShiftTiming(checkInAt, scheduledStart, scheduledEnd, 5);
     assert.equal(calc.lateMinutes, expected);
+    assert.equal(calc.flags.includes('MISSING_CHECKOUT'), false);
+    assert.equal(calc.flags.includes('WORKING'), true);
     assert.equal(timing.lateMinutes, expected);
     if (expected === 0) {
       assert.equal(timing.phase === 'late', false);

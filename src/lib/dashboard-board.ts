@@ -7,6 +7,7 @@ import {
 import { addCalendarDays, calendarDateInAppZone, getAppTimezone } from './timezone';
 import { scheduledWindow } from './attendance-calc';
 import { isCurrentOpenAttendance, isStaleMissingCheckout } from './open-attendance';
+import { resolveAttendanceDisplay } from './attendance-state';
 import { DateTime } from 'luxon';
 
 export type BoardPerson = {
@@ -237,10 +238,18 @@ export function buildTonightBoard(input: {
       };
       const currentOpen = isCurrentOpenAttendance(openState, input.now);
       const staleMissing = isStaleMissingCheckout(openState, input.now);
-      const holidayOt =
-        day.holidayWork && punch.workedMinutes != null ? punch.workedMinutes : punch.overtimeMinutes;
+      const display = resolveAttendanceDisplay({
+        now: input.now,
+        punch,
+        scheduledEnd: window.scheduledEnd,
+        checkoutWindowAfterMinutes: a.shift.checkoutWindowAfterMinutes,
+        holidayWork: day.holidayWork,
+        dayStatus: day.status,
+        excused: day.excused,
+        exceptionType: day.exception?.type,
+      });
       if (punch.lateMinutes > 0) late += 1;
-      if (!staleMissing && holidayOt > 0) overtime += 1;
+      if (!staleMissing && (display.overtimeMinutes || 0) > 0) overtime += 1;
       if (!punch.checkOutAt) {
         if (staleMissing) {
           missingCheckout += 1;
@@ -272,31 +281,12 @@ export function buildTonightBoard(input: {
         scheduledStart: window.scheduledStart.toISOString(),
         checkInAt: punch.checkInAt.toISOString(),
         checkOutAt: punch.checkOutAt ? punch.checkOutAt.toISOString() : null,
-        workedMinutes: staleMissing ? null : punch.workedMinutes,
-        lateMinutes: punch.lateMinutes,
-        overtimeMinutes: staleMissing ? 0 : holidayOt,
-        earlyLeaveMinutes: staleMissing ? 0 : punch.earlyLeaveMinutes,
-        statusPrimary: staleMissing
-          ? 'MISSING_CHECKOUT'
-          : day.holidayWork
-            ? 'HOLIDAY_WORK'
-            : punch.checkOutAt
-              ? punch.statusPrimary
-              : punch.lateMinutes > 0
-                ? 'LATE'
-                : 'WORKING',
-        flags: (() => {
-          try {
-            const parsed = JSON.parse(punch.flags || '[]');
-            return staleMissing
-              ? ['MISSING_CHECKOUT']
-              : day.holidayWork
-                ? [...parsed, 'HOLIDAY_WORK']
-                : parsed;
-          } catch {
-            return staleMissing ? ['MISSING_CHECKOUT'] : day.holidayWork ? ['HOLIDAY_WORK'] : [];
-          }
-        })(),
+        workedMinutes: display.workedMinutes,
+        lateMinutes: display.lateMinutes,
+        overtimeMinutes: display.overtimeMinutes ?? 0,
+        earlyLeaveMinutes: display.earlyLeaveMinutes ?? 0,
+        statusPrimary: display.status,
+        flags: display.flags,
         manualOverride: !!punch.manualOverride,
         virtualAbsent: false,
       });

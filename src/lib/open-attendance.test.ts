@@ -37,6 +37,16 @@ function openRecord(id = 'att-1') {
 }
 
 describe('open vs stale missing checkout', () => {
+  it('03:31 and 06:29 with existing IN stay CURRENT OPEN', () => {
+    const record = openRecord();
+    const at0331 = new Date('2026-09-27T00:31:00.000Z');
+    const at0629 = new Date('2026-09-27T03:29:00.000Z');
+    assert.equal(classifyOpenAttendance(record, at0331), 'CURRENT_OPEN');
+    assert.equal(classifyOpenAttendance(record, at0629), 'CURRENT_OPEN');
+    assert.equal(resolveCheckoutTarget([record], at0331).ok, true);
+    assert.equal(resolveCheckoutTarget([record], at0629).ok, true);
+  });
+
   it('open attendance before checkout deadline is CURRENT OPEN', () => {
     const record = openRecord();
     assert.equal(classifyOpenAttendance(record, beforeDeadline), 'CURRENT_OPEN');

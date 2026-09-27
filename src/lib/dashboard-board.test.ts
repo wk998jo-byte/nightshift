@@ -206,6 +206,39 @@ describe('tonight dashboard counts', () => {
     assert.equal(boardWorkDate(afterMidnight), '2026-09-21');
   });
 
+  it('keeps Working Now until checkout deadline, not scheduledEnd', () => {
+    const checkInAt = new Date('2026-09-21T12:40:00.000Z');
+    const at0331 = new Date('2026-09-22T00:31:00.000Z');
+    const at0629 = new Date('2026-09-22T03:29:00.000Z');
+    const assignment = asg({
+      id: 'a',
+      employeeId: 'a',
+      status: 'SCHEDULED',
+      employee: person('a', { name: 'Real A', code: '71326' }),
+      shift: { ...shift1, checkoutWindowAfterMinutes: 180 },
+      attendance: [
+        {
+          id: 'att-open',
+          checkInAt,
+          checkOutAt: null,
+          workedMinutes: null,
+          lateMinutes: 10,
+          overtimeMinutes: 0,
+          earlyLeaveMinutes: 0,
+          statusPrimary: 'LATE',
+          flags: '["PRESENT","LATE","WORKING","MISSING_CHECKOUT"]',
+        },
+      ],
+    });
+    const stillOpen = buildTonightBoard({ workDate: '2026-09-21', now: at0331, assignments: [assignment] });
+    assert.equal(stillOpen.currentlyWorking.length, 1);
+    assert.equal(stillOpen.rows[0].statusPrimary, 'LATE');
+    assert.equal(stillOpen.rows[0].flags.includes('MISSING_CHECKOUT'), false);
+    const beforeDeadline = buildTonightBoard({ workDate: '2026-09-21', now: at0629, assignments: [assignment] });
+    assert.equal(beforeDeadline.currentlyWorking.length, 1);
+    assert.notEqual(beforeDeadline.rows[0].statusPrimary, 'MISSING_CHECKOUT');
+  });
+
   it('dashboard stale record is MISSING_CHECKOUT and not Working Now', () => {
     const checkInAt = new Date('2026-09-21T12:40:00.000Z');
     const board = buildTonightBoard({

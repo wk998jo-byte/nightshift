@@ -119,6 +119,9 @@ export function evaluateAssignmentDay(input: {
   }
 
   if (exception?.type === 'ABSENT') {
+    if (input.hasCheckIn) {
+      return { status: 'PRESENT', isAbsent: false, excused: false, exception, holidayWork: false };
+    }
     return { status: 'ABSENT', isAbsent: true, excused: false, exception, holidayWork: false };
   }
 

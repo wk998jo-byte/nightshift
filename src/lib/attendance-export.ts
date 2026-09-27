@@ -9,6 +9,7 @@ import {
   type DayExceptionRecord,
 } from './day-status';
 import { isStaleMissingCheckout } from './open-attendance';
+import { resolveAttendanceDisplay } from './attendance-state';
 
 export const MAX_EXPORT_DAYS = 366;
 export const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -152,15 +153,6 @@ function asDate(value: Date | string | null | undefined): Date | null {
   return value instanceof Date ? value : new Date(value);
 }
 
-function parseFlags(raw: string | null | undefined): string {
-  try {
-    const flags = JSON.parse(raw || '[]');
-    return Array.isArray(flags) ? flags.join('|') : '';
-  } catch {
-    return '';
-  }
-}
-
 function excusedDashes(identity: {
   workDate: string;
   employee: string;
@@ -272,45 +264,44 @@ export function buildExportRows(
     };
 
     if (checkInAt && punch) {
-      if (
-        isStaleMissingCheckout(
-          {
-            checkInAt,
-            checkOutAt,
-            scheduledEnd: window.scheduledEnd,
-            checkoutWindowAfterMinutes: a.shift.checkoutWindowAfterMinutes,
-          },
-          now
-        )
-      ) {
-        rows.push({
-          ...base,
-          checkIn: formatTime(checkInAt),
-          checkOut: '—',
-          worked: '—',
-          late: String(punch.lateMinutes),
-          earlyLeave: '—',
-          ot: '—',
-          status: 'MISSING_CHECKOUT',
-          flags: 'MISSING_CHECKOUT',
-        });
-        continue;
-      }
-      const ot = day.holidayWork && punch.workedMinutes != null ? punch.workedMinutes : punch.overtimeMinutes;
-      const status = day.holidayWork ? 'HOLIDAY_WORK' : day.exception && day.excused ? day.status : punch.statusPrimary;
-      const flags = [parseFlags(punch.flags), day.holidayWork ? 'HOLIDAY_WORK' : '', day.exception && day.excused && !day.holidayWork ? day.status : '']
-        .filter(Boolean)
-        .join('|');
+      const display = resolveAttendanceDisplay({
+        now,
+        punch: {
+          checkInAt,
+          checkOutAt,
+          workedMinutes: punch.workedMinutes,
+          lateMinutes: punch.lateMinutes,
+          overtimeMinutes: punch.overtimeMinutes,
+          earlyLeaveMinutes: punch.earlyLeaveMinutes,
+          statusPrimary: punch.statusPrimary,
+          flags: punch.flags,
+        },
+        scheduledEnd: window.scheduledEnd,
+        checkoutWindowAfterMinutes: a.shift.checkoutWindowAfterMinutes,
+        holidayWork: day.holidayWork,
+        dayStatus: day.status,
+        excused: day.excused,
+        exceptionType: day.exception?.type,
+      });
+      const stale = isStaleMissingCheckout(
+        {
+          checkInAt,
+          checkOutAt,
+          scheduledEnd: window.scheduledEnd,
+          checkoutWindowAfterMinutes: a.shift.checkoutWindowAfterMinutes,
+        },
+        now
+      );
       rows.push({
         ...base,
         checkIn: formatTime(checkInAt),
-        checkOut: formatTime(checkOutAt),
-        worked: formatDuration(punch.workedMinutes),
-        late: String(punch.lateMinutes),
-        earlyLeave: String(punch.earlyLeaveMinutes),
-        ot: String(ot),
-        status,
-        flags,
+        checkOut: checkOutAt && !stale ? formatTime(checkOutAt) : '—',
+        worked: display.workedMinutes == null ? '—' : formatDuration(display.workedMinutes),
+        late: String(display.lateMinutes),
+        earlyLeave: !checkOutAt || stale ? '—' : String(display.earlyLeaveMinutes ?? 0),
+        ot: !checkOutAt || stale ? '—' : String(display.overtimeMinutes ?? 0),
+        status: display.status,
+        flags: display.flags.join('|'),
       });
       continue;
     }

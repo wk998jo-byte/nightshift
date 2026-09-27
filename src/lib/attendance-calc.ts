@@ -106,7 +106,6 @@ export function calculateAttendance(input: CalcInput): CalcResult {
   else flags.push('ON_TIME');
 
   if (!input.checkOutAt) {
-    flags.push('MISSING_CHECKOUT');
     flags.push('WORKING');
     return {
       workedMinutes: null,
