@@ -4,11 +4,10 @@ import {
   halfDayWindow,
   type DayExceptionRecord,
 } from './day-status';
-import { addCalendarDays, calendarDateInAppZone, getAppTimezone } from './timezone';
+import { addCalendarDays, calendarDateInAppZone } from './timezone';
 import { scheduledWindow } from './attendance-calc';
-import { isCurrentOpenAttendance, isStaleMissingCheckout } from './open-attendance';
+import { checkoutDeadline, isCurrentOpenAttendance, isStaleMissingCheckout } from './open-attendance';
 import { resolveAttendanceDisplay } from './attendance-state';
-import { DateTime } from 'luxon';
 
 export type BoardPerson = {
   id: string;
@@ -74,12 +73,36 @@ export type BoardRow = {
   virtualAbsent: boolean;
 };
 
-/** Night board date: before 08:00 Asia/Riyadh the night still belongs to yesterday. */
-export function boardWorkDate(now: Date, explicit?: string | null): string {
+export type BoardDateShift = {
+  startTime: string;
+  endTime: string;
+  crossesMidnight: boolean;
+  checkoutWindowAfterMinutes?: number | null;
+};
+
+/** Latest checkout deadline on a workDate, derived from configured shifts. */
+export function latestNightCheckoutDeadline(workDate: string, shifts: BoardDateShift[]): Date | null {
+  let latest: Date | null = null;
+  for (const shift of shifts) {
+    const window = scheduledWindow(workDate, shift.startTime, shift.endTime, shift.crossesMidnight);
+    const deadline = checkoutDeadline(window.scheduledEnd, shift.checkoutWindowAfterMinutes);
+    if (!latest || deadline.getTime() > latest.getTime()) latest = deadline;
+  }
+  return latest;
+}
+
+/** Night board date stays on the previous workDate until the latest shift checkout deadline. */
+export function boardWorkDate(
+  now: Date,
+  explicit?: string | null,
+  shifts: BoardDateShift[] = []
+): string {
   if (explicit && /^\d{4}-\d{2}-\d{2}$/.test(explicit)) return explicit;
   const today = calendarDateInAppZone(now);
-  const hour = DateTime.fromJSDate(now, { zone: getAppTimezone() }).hour;
-  if (hour < 8) return addCalendarDays(today, -1);
+  const yesterday = addCalendarDays(today, -1);
+  if (shifts.length === 0) return today;
+  const deadline = latestNightCheckoutDeadline(yesterday, shifts);
+  if (deadline && now.getTime() <= deadline.getTime()) return yesterday;
   return today;
 }
 
@@ -100,19 +123,34 @@ export function shiftDisplayLabel(shift: Pick<BoardShift, 'startTime' | 'endTime
 }
 
 export function matchesStatusFilter(
-  row: Pick<BoardRow, 'statusPrimary' | 'checkInAt' | 'checkOutAt'>,
+  row: Pick<BoardRow, 'statusPrimary' | 'checkInAt' | 'checkOutAt'> & {
+    lateMinutes?: number;
+    overtimeMinutes?: number | null;
+    earlyLeaveMinutes?: number | null;
+    flags?: string[];
+  },
   filter: string
 ): boolean {
   if (filter === 'ALL') return true;
+  const flags = row.flags || [];
+  const hasFlag = (name: string) => flags.includes(name) || row.statusPrimary === name;
   if (filter === 'WORKING') {
     return (
       !!row.checkInAt &&
       !row.checkOutAt &&
       row.statusPrimary !== 'ABSENT' &&
-      row.statusPrimary !== 'MISSING_CHECKOUT'
+      row.statusPrimary !== 'MISSING_CHECKOUT' &&
+      !flags.includes('MISSING_CHECKOUT')
     );
   }
   if (filter === 'ON_TIME') return row.statusPrimary === 'ON_TIME' || row.statusPrimary === 'PRESENT';
+  if (filter === 'LATE') return (row.lateMinutes || 0) > 0 || hasFlag('LATE');
+  if (filter === 'OVERTIME') return (row.overtimeMinutes || 0) > 0 || hasFlag('OVERTIME');
+  if (filter === 'EARLY_DEPARTURE') {
+    return (row.earlyLeaveMinutes || 0) > 0 || hasFlag('EARLY_DEPARTURE');
+  }
+  if (filter === 'MISSING_CHECKOUT') return hasFlag('MISSING_CHECKOUT');
+  if (filter === 'ABSENT') return row.statusPrimary === 'ABSENT' || flags.includes('ABSENT');
   return row.statusPrimary === filter;
 }
 
@@ -369,6 +407,10 @@ export function filterBoardRows<
     checkInAt: string | null;
     checkOutAt: string | null;
     shiftKey?: 'SHIFT_1' | 'SHIFT_2' | null;
+    lateMinutes?: number;
+    overtimeMinutes?: number | null;
+    earlyLeaveMinutes?: number | null;
+    flags?: string[];
   },
 >(rows: T[], input: { q?: string; status?: string; shift?: string }): T[] {
   const q = (input.q || '').trim().toLowerCase();

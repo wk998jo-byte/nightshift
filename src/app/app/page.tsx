@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { BrandButton, EmployeeAvatar, Logo, StatusChip, Surface } from '@/components/ui';
 import { lateMinutesAfterGrace } from '@/lib/attendance-calc';
+import { employeeCheckInTimingView } from '@/lib/attendance-state';
 import { getBrowserDeviceId } from '@/lib/browser-device-id';
 import { startQrScanner, stopMediaStream, type BarcodeDetectorLike } from '@/lib/qr-scanner';
 import { completeLogout, employeeTodayFetchInit } from '@/lib/session-policy';
@@ -295,8 +296,19 @@ export default function EmployeeAppPage() {
     liveLate = timing.lateMinutes;
   }
 
+  const checkInView = employeeCheckInTimingView({
+    eligibility: data.checkInEligibility,
+    liveUntil,
+    liveLate,
+  });
   const timingPhase =
-    liveUntil > 0 ? 'early' : liveLate > 0 ? 'late' : timing?.phase || 'on_time';
+    checkInView.kind === 'SHIFT_ENDED'
+      ? 'ended'
+      : checkInView.kind === 'EARLY' || checkInView.kind === 'CHECKIN_TOO_EARLY'
+        ? 'early'
+        : checkInView.kind === 'LATE'
+          ? 'late'
+          : timing?.phase || 'on_time';
 
   return (
     <main className="mesh-bg min-h-screen pb-24">
@@ -336,10 +348,13 @@ export default function EmployeeAppPage() {
             <StatusChip tone={active ? 'ok' : offDay ? 'neutral' : noSchedule ? 'warn' : 'neutral'}>
               {active ? 'Shift active' : offDay ? 'Off today' : noSchedule ? 'No schedule' : 'Not started'}
             </StatusChip>
-            {!active && timingPhase === 'early' ? (
+            {!active && checkInView.kind === 'SHIFT_ENDED' ? (
+              <StatusChip tone="neutral">Shift ended</StatusChip>
+            ) : null}
+            {!active && timingPhase === 'early' && checkInView.kind !== 'SHIFT_ENDED' ? (
               <StatusChip tone="info">مبكر</StatusChip>
             ) : null}
-            {!active && timingPhase === 'late' ? (
+            {!active && checkInView.showLateMinutes ? (
               <StatusChip tone="warn">متأخر</StatusChip>
             ) : null}
           </div>
@@ -394,14 +409,23 @@ export default function EmployeeAppPage() {
             {!active && scheduled ? (
               <Surface
                 className={
-                  timingPhase === 'late'
-                    ? '!border-amber-200 !bg-amber-50/80'
-                    : timingPhase === 'early'
-                      ? '!border-sky-200 !bg-sky-50/80'
-                      : ''
+                  checkInView.kind === 'SHIFT_ENDED'
+                    ? '!border-slate-200 !bg-slate-50/80'
+                    : checkInView.showLateMinutes
+                      ? '!border-amber-200 !bg-amber-50/80'
+                      : timingPhase === 'early'
+                        ? '!border-sky-200 !bg-sky-50/80'
+                        : ''
                 }
               >
-                {timingPhase === 'early' ? (
+                {checkInView.kind === 'SHIFT_ENDED' ? (
+                  <div className="text-center">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                      {checkInView.heading}
+                    </p>
+                    <p className="mt-2 text-lg font-bold text-slate-800">{checkInView.detail}</p>
+                  </div>
+                ) : timingPhase === 'early' ? (
                   <div className="text-center">
                     <p className="text-xs font-semibold uppercase tracking-wide text-sky-700">
                       الشفت لم يبدأ بعد
@@ -411,18 +435,18 @@ export default function EmployeeAppPage() {
                     </p>
                     <p className="mt-1 text-sm text-sky-700">متبقي على بداية الشفت</p>
                     <p className="mt-3 text-xs text-slate-500">
-                      {data.checkInEligibility?.code === 'CHECKIN_TOO_EARLY'
-                        ? `START SHIFT opens in ${data.checkInEligibility.minutesUntilOpen ?? liveUntil} minutes`
+                      {checkInView.kind === 'CHECKIN_TOO_EARLY'
+                        ? checkInView.detail
                         : 'تقدر تسوي Start Shift الحين · يُسجّل كحضور مبكر'}
                     </p>
                   </div>
-                ) : timingPhase === 'late' ? (
+                ) : checkInView.showLateMinutes ? (
                   <div className="text-center">
                     <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">
                       تأخر عن بداية الشفت
                     </p>
                     <p className="mt-2 text-3xl font-bold tabular-nums text-amber-800">
-                      {liveLate} دقيقة
+                      {checkInView.lateMinutes} دقيقة
                     </p>
                     <p className="mt-1 text-sm text-amber-700">متأخر حتى الآن</p>
                     <p className="mt-3 text-xs text-slate-500">
@@ -472,26 +496,16 @@ export default function EmployeeAppPage() {
                     امسح QR الموقع للبدء
                   </p>
                   <h2 className="mb-5 text-center text-lg font-bold text-slate-900">
-                    {data.checkInEligibility?.code === 'SHIFT_ENDED'
-                      ? 'This shift has already ended.'
-                      : data.checkInEligibility?.code === 'EXCUSED_DAY'
-                        ? 'An approved day status exists. Contact your supervisor if you are required to work.'
-                        : data.checkInEligibility?.code === 'CHECKIN_TOO_EARLY'
-                          ? 'Check-in window is not open yet'
-                        : timingPhase === 'early'
-                          ? 'بدء مبكر للشفت'
-                          : timingPhase === 'late'
-                            ? 'تسجيل حضور متأخر'
-                            : 'جاهز لبدء الشفت'}
+                    {checkInView.heading}
                   </h2>
-                  {data.checkInEligibility?.code === 'CHECKIN_TOO_EARLY' &&
-                  data.checkInEligibility.minutesUntilOpen != null ? (
-                    <p className="mb-4 text-center text-sm text-slate-500">
-                      START SHIFT opens in {data.checkInEligibility.minutesUntilOpen} minutes
-                    </p>
+                  {checkInView.detail &&
+                  (checkInView.kind === 'SHIFT_ENDED' ||
+                    checkInView.kind === 'CHECKIN_TOO_EARLY' ||
+                    checkInView.kind === 'EXCUSED_DAY') ? (
+                    <p className="mb-4 text-center text-sm text-slate-500">{checkInView.detail}</p>
                   ) : null}
                   <BrandButton
-                    disabled={busy || data.checkInEligibility?.allowed === false}
+                    disabled={busy || checkInView.startDisabled}
                     onClick={() => void startCamera('in')}
                     className="w-full !rounded-2xl !py-5 !text-lg"
                   >

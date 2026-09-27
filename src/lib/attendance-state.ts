@@ -307,3 +307,79 @@ export function exceptionForEmployee(
 ): DayExceptionRecord | null {
   return resolveDayException(workDate, employeeId, exceptions);
 }
+
+export type EmployeeCheckInView = {
+  kind: 'SHIFT_ENDED' | 'CHECKIN_TOO_EARLY' | 'EXCUSED_DAY' | 'EARLY' | 'LATE' | 'READY';
+  showLateMinutes: boolean;
+  lateMinutes: number;
+  heading: string;
+  detail: string;
+  startDisabled: boolean;
+};
+
+export function employeeCheckInTimingView(input: {
+  eligibility?: { allowed?: boolean; code?: string | null; minutesUntilOpen?: number } | null;
+  liveUntil: number;
+  liveLate: number;
+}): EmployeeCheckInView {
+  const code = input.eligibility?.code || null;
+  if (code === SHIFT_ENDED_CODE) {
+    return {
+      kind: 'SHIFT_ENDED',
+      showLateMinutes: false,
+      lateMinutes: 0,
+      heading: 'Shift ended',
+      detail: 'Check-in is no longer available for this shift.',
+      startDisabled: true,
+    };
+  }
+  if (code === EXCUSED_DAY_CODE) {
+    return {
+      kind: 'EXCUSED_DAY',
+      showLateMinutes: false,
+      lateMinutes: 0,
+      heading: EXCUSED_DAY_ERROR,
+      detail: 'Contact your supervisor if you are required to work.',
+      startDisabled: true,
+    };
+  }
+  if (code === CHECKIN_TOO_EARLY_CODE) {
+    const minutes = input.eligibility?.minutesUntilOpen ?? input.liveUntil;
+    return {
+      kind: 'CHECKIN_TOO_EARLY',
+      showLateMinutes: false,
+      lateMinutes: 0,
+      heading: 'Check-in window is not open yet',
+      detail: `START SHIFT opens in ${minutes} minutes`,
+      startDisabled: true,
+    };
+  }
+  if (input.liveUntil > 0) {
+    return {
+      kind: 'EARLY',
+      showLateMinutes: false,
+      lateMinutes: 0,
+      heading: 'بدء مبكر للشفت',
+      detail: '',
+      startDisabled: input.eligibility?.allowed === false,
+    };
+  }
+  if (input.liveLate > 0) {
+    return {
+      kind: 'LATE',
+      showLateMinutes: true,
+      lateMinutes: input.liveLate,
+      heading: 'تسجيل حضور متأخر',
+      detail: '',
+      startDisabled: input.eligibility?.allowed === false,
+    };
+  }
+  return {
+    kind: 'READY',
+    showLateMinutes: false,
+    lateMinutes: 0,
+    heading: 'جاهز لبدء الشفت',
+    detail: '',
+    startDisabled: input.eligibility?.allowed === false,
+  };
+}

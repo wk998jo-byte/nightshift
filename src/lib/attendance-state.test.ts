@@ -7,6 +7,7 @@ import {
   EXCUSED_DAY_CODE,
   SHIFT_ENDED_CODE,
   effectiveScheduledWindow,
+  employeeCheckInTimingView,
   evaluateNormalQrCheckIn,
   flagsForOpenPunch,
   resolveAttendanceDisplay,
@@ -399,5 +400,34 @@ describe('dashboard / export / display consistency', () => {
     const exportHoliday = buildExportRows([exportAsg()], during, [holiday]);
     assert.equal(boardHoliday.rows[0].statusPrimary, 'HOLIDAY');
     assert.equal(exportHoliday[0].status, 'HOLIDAY');
+  });
+});
+
+describe('employee UI after shift end', () => {
+  it('SHIFT_ENDED hides giant late counter and disables START SHIFT', () => {
+    const view = employeeCheckInTimingView({
+      eligibility: { allowed: false, code: SHIFT_ENDED_CODE },
+      liveUntil: 0,
+      liveLate: 745,
+    });
+    assert.equal(view.kind, 'SHIFT_ENDED');
+    assert.equal(view.showLateMinutes, false);
+    assert.equal(view.lateMinutes, 0);
+    assert.equal(view.heading, 'Shift ended');
+    assert.equal(view.detail, 'Check-in is no longer available for this shift.');
+    assert.equal(view.startDisabled, true);
+    assert.notEqual(view.lateMinutes, 745);
+  });
+
+  it('valid late during shift still shows correct late minutes', () => {
+    const view = employeeCheckInTimingView({
+      eligibility: { allowed: true, code: null },
+      liveUntil: 0,
+      liveLate: 6,
+    });
+    assert.equal(view.kind, 'LATE');
+    assert.equal(view.showLateMinutes, true);
+    assert.equal(view.lateMinutes, 6);
+    assert.equal(view.startDisabled, false);
   });
 });

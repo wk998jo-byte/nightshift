@@ -13,8 +13,17 @@ export async function GET(req: NextRequest) {
   }
 
   const now = new Date();
-  const workDate = boardWorkDate(now, req.nextUrl.searchParams.get('date'));
   const projectId = req.nextUrl.searchParams.get('projectId') || undefined;
+  const shifts = await prisma.shift.findMany({
+    where: { isActive: true },
+    select: {
+      startTime: true,
+      endTime: true,
+      crossesMidnight: true,
+      checkoutWindowAfterMinutes: true,
+    },
+  });
+  const workDate = boardWorkDate(now, req.nextUrl.searchParams.get('date'), shifts);
 
   const [assignments, exceptions] = await Promise.all([
     prisma.employeeShiftAssignment.findMany({

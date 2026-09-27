@@ -1,4 +1,5 @@
 import type { DayExceptionType } from './day-status';
+import { QR_BLOCKING_EXCEPTION_TYPES } from './attendance-state';
 
 export type ExceptionScope = 'HOLIDAY' | 'EMPLOYEE';
 
@@ -69,10 +70,26 @@ export function planDayException(
     return { ok: false, error: 'Company-wide exception must be Holiday', status: 400 };
   }
 
-  if (draft.type === 'ABSENT' && context?.hasCheckIn) {
+  if (context?.hasCheckIn && draft.type === 'ABSENT') {
     return {
       ok: false,
       error: 'Attendance already exists for this date. Use attendance correction instead of marking ABSENT.',
+      status: 409,
+    };
+  }
+  if (context?.hasCheckIn && draft.type === 'HALF_DAY') {
+    return {
+      ok: false,
+      error:
+        'Attendance already exists for this date. Use attendance correction instead of changing the half-day window.',
+      status: 409,
+    };
+  }
+  if (context?.hasCheckIn && QR_BLOCKING_EXCEPTION_TYPES.includes(draft.type)) {
+    return {
+      ok: false,
+      error:
+        'Attendance already exists for this date. Remove or correct attendance before adding a full-day leave status.',
       status: 409,
     };
   }

@@ -4,6 +4,7 @@ import {
   boardWorkDate,
   buildTonightBoard,
   filterBoardRows,
+  latestNightCheckoutDeadline,
   pickActiveTerminal,
   type BoardAssignment,
 } from './dashboard-board';
@@ -36,6 +37,11 @@ const shift2 = {
   crossesMidnight: true,
   gracePeriodMinutes: 5,
 };
+
+const productionBoardShifts = [
+  { startTime: '15:30', endTime: '03:30', crossesMidnight: true, checkoutWindowAfterMinutes: 180 },
+  { startTime: '19:30', endTime: '07:30', crossesMidnight: true, checkoutWindowAfterMinutes: 180 },
+];
 
 function person(
   id: string,
@@ -201,9 +207,127 @@ describe('tonight dashboard counts', () => {
 
   it('uses a single night workDate, not yesterday+today', () => {
     const evening = new Date('2026-09-21T16:30:00.000Z'); // 19:30 Riyadh
-    assert.equal(boardWorkDate(evening), '2026-09-21');
+    assert.equal(boardWorkDate(evening, null, productionBoardShifts), '2026-09-21');
     const afterMidnight = new Date('2026-09-21T22:00:00.000Z'); // 01:00 Riyadh Sep 22
-    assert.equal(boardWorkDate(afterMidnight), '2026-09-21');
+    assert.equal(boardWorkDate(afterMidnight, null, productionBoardShifts), '2026-09-21');
+  });
+
+  it('board date follows the latest checkout deadline, not 08:00', () => {
+    const at0759 = new Date('2026-09-22T04:59:00.000Z');
+    const at0830 = new Date('2026-09-22T05:30:00.000Z');
+    const at1029 = new Date('2026-09-22T07:29:00.000Z');
+    const at1031 = new Date('2026-09-22T07:31:00.000Z');
+    assert.equal(boardWorkDate(at0759, null, productionBoardShifts), '2026-09-21');
+    assert.equal(boardWorkDate(at0830, null, productionBoardShifts), '2026-09-21');
+    assert.equal(boardWorkDate(at1029, null, productionBoardShifts), '2026-09-21');
+    assert.equal(boardWorkDate(at1031, null, productionBoardShifts), '2026-09-22');
+    const deadline = latestNightCheckoutDeadline('2026-09-21', productionBoardShifts);
+    assert.ok(deadline);
+    assert.equal(deadline.toISOString(), '2026-09-22T07:30:00.000Z');
+    const shift2Open = buildTonightBoard({
+      workDate: boardWorkDate(at0830, null, productionBoardShifts),
+      now: at0830,
+      assignments: [
+        asg({
+          id: 's2-open',
+          employeeId: 'b',
+          workDate: '2026-09-21',
+          status: 'SCHEDULED',
+          employee: person('b', { name: 'Real B', code: '71343' }),
+          shift: { ...shift2, checkoutWindowAfterMinutes: 180 },
+          attendance: [
+            {
+              id: 'att-s2',
+              checkInAt: new Date('2026-09-21T16:40:00.000Z'),
+              checkOutAt: null,
+              workedMinutes: null,
+              lateMinutes: 10,
+              overtimeMinutes: 0,
+              earlyLeaveMinutes: 0,
+              statusPrimary: 'LATE',
+            },
+          ],
+        }),
+        asg({
+          id: 's1-done',
+          employeeId: 'a',
+          workDate: '2026-09-21',
+          status: 'SCHEDULED',
+          employee: person('a', { name: 'Real A', code: '71326' }),
+          shift: { ...shift1, checkoutWindowAfterMinutes: 180 },
+          attendance: [
+            {
+              id: 'att-s1',
+              checkInAt: new Date('2026-09-21T12:40:00.000Z'),
+              checkOutAt: new Date('2026-09-22T00:30:00.000Z'),
+              workedMinutes: 710,
+              lateMinutes: 10,
+              overtimeMinutes: 0,
+              earlyLeaveMinutes: 0,
+              statusPrimary: 'LATE',
+            },
+          ],
+        }),
+      ],
+    });
+    assert.equal(shift2Open.currentlyWorking.length, 1);
+    assert.equal(shift2Open.currentlyWorking[0].code, '71343');
+    assert.equal(shift2Open.rows.find((r) => r.employeeCode === '71326')?.statusPrimary, 'LATE');
+  });
+
+  it('status filters use metrics and flags, not only statusPrimary', () => {
+    const lateOt = {
+      employeeName: 'A',
+      employeeCode: '71326',
+      statusPrimary: 'LATE',
+      checkInAt: 'in',
+      checkOutAt: 'out',
+      lateMinutes: 12,
+      overtimeMinutes: 45,
+      earlyLeaveMinutes: 0,
+      flags: ['PRESENT', 'LATE', 'OVERTIME'],
+    };
+    const lateEarly = {
+      employeeName: 'B',
+      employeeCode: '71343',
+      statusPrimary: 'LATE',
+      checkInAt: 'in',
+      checkOutAt: 'out',
+      lateMinutes: 8,
+      overtimeMinutes: 0,
+      earlyLeaveMinutes: 20,
+      flags: ['PRESENT', 'LATE', 'EARLY_DEPARTURE'],
+    };
+    const onTime = {
+      employeeName: 'C',
+      employeeCode: '71378',
+      statusPrimary: 'ON_TIME',
+      checkInAt: 'in',
+      checkOutAt: 'out',
+      lateMinutes: 0,
+      overtimeMinutes: 0,
+      earlyLeaveMinutes: 0,
+      flags: ['PRESENT', 'ON_TIME'],
+    };
+    const missing = {
+      employeeName: 'D',
+      employeeCode: '71300',
+      statusPrimary: 'MISSING_CHECKOUT',
+      checkInAt: 'in',
+      checkOutAt: null,
+      lateMinutes: 6,
+      overtimeMinutes: 0,
+      earlyLeaveMinutes: 0,
+      flags: ['MISSING_CHECKOUT'],
+    };
+    const rows = [lateOt, lateEarly, onTime, missing];
+    assert.equal(filterBoardRows(rows, { status: 'LATE' }).map((r) => r.employeeCode).join(','), '71326,71343,71300');
+    assert.equal(filterBoardRows(rows, { status: 'OVERTIME' }).map((r) => r.employeeCode).join(','), '71326');
+    assert.equal(filterBoardRows(rows, { status: 'EARLY_DEPARTURE' }).map((r) => r.employeeCode).join(','), '71343');
+    assert.equal(filterBoardRows(rows, { status: 'ON_TIME' }).map((r) => r.employeeCode).join(','), '71378');
+    assert.equal(filterBoardRows(rows, { status: 'MISSING_CHECKOUT' }).map((r) => r.employeeCode).join(','), '71300');
+    assert.equal(filterBoardRows([onTime], { status: 'OVERTIME' }).length, 0);
+    assert.equal(filterBoardRows([onTime], { status: 'EARLY_DEPARTURE' }).length, 0);
   });
 
   it('keeps Working Now until checkout deadline, not scheduledEnd', () => {

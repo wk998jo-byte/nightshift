@@ -450,4 +450,51 @@ describe('day exception planning', () => {
     );
     assert.equal(halfOk.ok, true);
   });
+
+  it('rejects full-day leave and half-day after a real punch, but allows Holiday', () => {
+    for (const type of [
+      'SICK_LEAVE',
+      'VACATION',
+      'UMRA_LEAVE',
+      'EMERGENCY_VACATION',
+      'RELEASED',
+      'NEW',
+    ] as const) {
+      const blocked = planDayException(
+        { workDate: '2026-09-26', scope: 'EMPLOYEE', type, employeeId: 'e1' },
+        null,
+        { hasCheckIn: true }
+      );
+      assert.equal(blocked.ok, false, type);
+      if (!blocked.ok) assert.equal(blocked.status, 409);
+    }
+    const halfAfterPunch = planDayException(
+      {
+        workDate: '2026-09-26',
+        scope: 'EMPLOYEE',
+        type: 'HALF_DAY',
+        employeeId: 'e1',
+        expectedWorkMinutes: 240,
+      },
+      null,
+      { hasCheckIn: true }
+    );
+    assert.equal(halfAfterPunch.ok, false);
+    if (!halfAfterPunch.ok) {
+      assert.equal(halfAfterPunch.status, 409);
+      assert.match(halfAfterPunch.error, /attendance correction/i);
+    }
+    const holidayAfterPunch = planDayException(
+      { workDate: '2026-09-26', scope: 'HOLIDAY', type: 'HOLIDAY', reason: 'National Day' },
+      null,
+      { hasCheckIn: true }
+    );
+    assert.equal(holidayAfterPunch.ok, true);
+    const sickBeforePunch = planDayException(
+      { workDate: '2026-09-26', scope: 'EMPLOYEE', type: 'SICK_LEAVE', employeeId: 'e1' },
+      null,
+      { hasCheckIn: false }
+    );
+    assert.equal(sickBeforePunch.ok, true);
+  });
 });
