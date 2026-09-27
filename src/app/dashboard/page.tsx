@@ -8,6 +8,12 @@ import { shortName } from '@/lib/employee-identity';
 import { canManageSchedule } from '@/lib/shift-catalog';
 import { filterBoardRows } from '@/lib/dashboard-board';
 import { completeLogout } from '@/lib/session-policy';
+import { dashboardLiveFetchInit } from '@/lib/page-cache';
+import {
+  correctionPrefillFromMissingOut,
+  dashboardOpenPunchAction,
+} from '@/lib/open-attendance';
+import BfCacheReload from '@/components/bfcache-reload';
 import ShiftScheduleTab from './shift-schedule-tab';
 import DayExceptionsTab from './day-exceptions-tab';
 import ExportAttendanceDrawer from './export-attendance-drawer';
@@ -28,8 +34,10 @@ type Summary = {
 
 type RecordRow = {
   id: string;
+  employeeId: string;
   employeeName: string;
   employeeCode: string;
+  workDate?: string;
   project: string;
   projectLocation?: string | null;
   shiftLabel?: string;
@@ -155,10 +163,17 @@ export default function DashboardPage() {
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [detailsError, setDetailsError] = useState('');
   const [details, setDetails] = useState<AttendanceDetailsPayload | null>(null);
+  const [correctionPrefill, setCorrectionPrefill] = useState<{
+    employeeId: string;
+    workDate: string;
+    attendanceId: string;
+  } | null>(null);
 
   const loadTonight = useCallback(async () => {
     const qs = selectedDate ? `?date=${selectedDate}` : '';
-    const data = await fetch(`/api/dashboard/tonight${qs}`).then((r) => r.json());
+    const data = await fetch(`/api/dashboard/tonight${qs}`, dashboardLiveFetchInit()).then((r) =>
+      r.json()
+    );
     setWorkDate(data.workDate);
     setSummary(data.summary);
     setRecords(data.records || []);
@@ -260,21 +275,16 @@ export default function DashboardPage() {
     }
   }
 
-  async function manualCheckOutFor(code: string, attendanceId: string) {
-    const lookup = await fetch(`/api/employees?code=${encodeURIComponent(code)}`);
-    const empJson = await lookup.json();
-    if (!empJson.employee?.id) return;
-    const res = await fetch('/api/attendance/manual', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        action: 'check-out',
-        employeeId: empJson.employee.id,
-        attendanceId,
-        reason: 'Supervisor closed missing checkout',
-      }),
-    });
-    if (res.ok) void loadTonight();
+  function openFixOut(row: RecordRow) {
+    if (!row.employeeId) return;
+    setCorrectionPrefill(
+      correctionPrefillFromMissingOut({
+        employeeId: row.employeeId,
+        workDate: row.workDate || workDate,
+        attendanceId: row.id,
+      })
+    );
+    setSection('exceptions');
   }
 
   const filtered = filterBoardRows(records, { q, status: statusFilter, shift: shiftFilter });
@@ -294,6 +304,7 @@ export default function DashboardPage() {
 
   return (
     <main className="mesh-bg min-h-screen">
+      <BfCacheReload />
       <header className="sticky top-0 z-20 border-b border-slate-200/80 bg-white/90 backdrop-blur-md">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div className="flex items-center gap-3">
@@ -509,21 +520,27 @@ export default function DashboardPage() {
                           <td className="py-3.5 pr-2">{r.checkInAt ? fmtTime(r.checkInAt) : '—'}</td>
                           <td className="py-3.5 pr-2">
                             {r.checkOutAt ? fmtTime(r.checkOutAt) : '—'}
-                            {r.checkInAt && !r.checkOutAt && !r.virtualAbsent ? (
+                            {dashboardOpenPunchAction(r) === 'FIX_OUT' ? (
                               <button
                                 className="ml-2 text-xs font-semibold text-[#C8102E]"
-                                onClick={() => void manualCheckOutFor(r.employeeCode, r.id)}
+                                onClick={() => openFixOut(r)}
                               >
-                                Close
+                                Fix OUT
                               </button>
                             ) : null}
                           </td>
-                          <td className="py-3.5 pr-2 font-medium">{r.workedMinutes == null ? '—' : fmt(r.workedMinutes)}</td>
+                          <td className="py-3.5 pr-2 font-medium">
+                            {r.statusPrimary === 'MISSING_CHECKOUT' || r.workedMinutes == null
+                              ? '—'
+                              : fmt(r.workedMinutes)}
+                          </td>
                           <td className="py-3.5 pr-2">
                             {r.checkInAt ? `${r.lateMinutes}m` : '—'}
                           </td>
                           <td className="py-3.5 pr-2">
-                            {r.checkInAt ? `${r.overtimeMinutes}m` : '—'}
+                            {r.statusPrimary === 'MISSING_CHECKOUT' || !r.checkInAt
+                              ? '—'
+                              : `${r.overtimeMinutes}m`}
                           </td>
                           <td className="py-3.5">
                             <StatusChip tone={toneFor(r.statusPrimary)}>
@@ -584,7 +601,9 @@ export default function DashboardPage() {
         ) : null}
 
         {section === 'schedule' ? <ShiftScheduleTab /> : null}
-        {section === 'exceptions' ? <DayExceptionsTab /> : null}
+        {section === 'exceptions' ? (
+          <DayExceptionsTab correctionPrefill={correctionPrefill} />
+        ) : null}
 
         {section === 'people' ? (
           <Surface>

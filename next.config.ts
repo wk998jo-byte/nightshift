@@ -1,5 +1,6 @@
 import type { NextConfig } from 'next';
 import path from 'path';
+import { nextHtmlAppCacheHeaders } from './src/lib/page-cache';
 
 const nextConfig: NextConfig = {
   turbopack: {
@@ -11,6 +12,9 @@ const nextConfig: NextConfig = {
     '**.repl.co',
   ],
   agentRules: false,
+  async headers() {
+    return nextHtmlAppCacheHeaders();
+  },
 };
 
 export default nextConfig;

@@ -6,6 +6,7 @@ import { calculateAttendance } from '@/lib/attendance-calc';
 import { fingerprintFromRequest, hashToken, verifyQrToken } from '@/lib/security';
 import { observePunchDevice, recordDeviceWarnings } from '@/lib/device-security';
 import { AttendanceMethod } from '@prisma/client';
+import { resolveCheckoutTarget, withShiftCheckoutWindow } from '@/lib/open-attendance';
 
 export async function POST(req: NextRequest) {
   const auth = await getSession();
@@ -36,7 +37,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'QR mismatch' }, { status: 400 });
   }
 
-  const open = await prisma.attendanceRecord.findFirst({
+  const openRecords = await prisma.attendanceRecord.findMany({
     where: {
       employeeId: auth.employeeId,
       checkInAt: { not: null },
@@ -44,9 +45,17 @@ export async function POST(req: NextRequest) {
     },
     include: { shift: true, project: true, employee: { include: { user: { select: { role: true, isActive: true } } } } },
   });
-  if (!open) {
-    return NextResponse.json({ error: 'No open shift to end' }, { status: 404 });
+  const target = resolveCheckoutTarget(
+    openRecords.map((row) => withShiftCheckoutWindow(row)),
+    new Date()
+  );
+  if (!target.ok) {
+    return NextResponse.json(
+      { error: target.error, code: target.code },
+      { status: target.code === 'STALE_MISSING_CHECKOUT' ? 409 : 404 }
+    );
   }
+  const open = target.record;
 
   if (open.projectId !== parsed.projectId) {
     return NextResponse.json(

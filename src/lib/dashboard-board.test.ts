@@ -206,6 +206,42 @@ describe('tonight dashboard counts', () => {
     assert.equal(boardWorkDate(afterMidnight), '2026-09-21');
   });
 
+  it('dashboard stale record is MISSING_CHECKOUT and not Working Now', () => {
+    const checkInAt = new Date('2026-09-21T12:40:00.000Z');
+    const board = buildTonightBoard({
+      workDate: '2026-09-21',
+      now: afterShiftEnd,
+      assignments: [
+        asg({
+          id: 'a',
+          employeeId: 'a',
+          status: 'SCHEDULED',
+          employee: person('a', { name: 'Real A', code: '71326' }),
+          shift: { ...shift1, checkoutWindowAfterMinutes: 180 },
+          attendance: [
+            {
+              id: 'att-stale',
+              checkInAt,
+              checkOutAt: null,
+              workedMinutes: 1455,
+              lateMinutes: 10,
+              overtimeMinutes: 745,
+              earlyLeaveMinutes: 0,
+              statusPrimary: 'WORKING',
+            },
+          ],
+        }),
+      ],
+    });
+    assert.equal(board.rows[0].statusPrimary, 'MISSING_CHECKOUT');
+    assert.equal(board.currentlyWorking.length, 0);
+    assert.equal(board.working, 0);
+    assert.equal(board.missingCheckout, 1);
+    assert.equal(board.rows[0].workedMinutes, null);
+    assert.equal(board.rows[0].overtimeMinutes, 0);
+    assert.equal(board.rows[0].checkInAt, checkInAt.toISOString());
+  });
+
   it('does not mark a scheduled employee absent while the shift is still running', () => {
     const board = buildTonightBoard({
       workDate: '2026-09-21',

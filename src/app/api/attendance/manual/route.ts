@@ -5,6 +5,13 @@ import { calculateAttendance, scheduledWindow } from '@/lib/attendance-calc';
 import { getTonightAssignment } from '@/lib/schedule';
 import { checkInDeniedReason } from '@/lib/schedule-lookup';
 import { AttendanceMethod } from '@prisma/client';
+import {
+  checkInBlockedBy,
+  isStaleMissingCheckout,
+  STALE_MISSING_CHECKOUT_CODE,
+  STALE_MISSING_CHECKOUT_ERROR,
+  withShiftCheckoutWindow,
+} from '@/lib/open-attendance';
 
 /** Supervisor/Admin manual check-in or check-out */
 export async function POST(req: NextRequest) {
@@ -54,10 +61,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const open = await prisma.attendanceRecord.findFirst({
+    const openRecords = await prisma.attendanceRecord.findMany({
       where: { employeeId, checkOutAt: null, checkInAt: { not: null } },
+      include: { shift: true },
     });
-    if (open) {
+    const blocking = checkInBlockedBy(
+      openRecords.map((row) => withShiftCheckoutWindow(row)),
+      at
+    );
+    if (blocking) {
       return NextResponse.json({ error: 'Open shift already exists' }, { status: 409 });
     }
 
@@ -131,6 +143,16 @@ export async function POST(req: NextRequest) {
 
     if (!open || !open.checkInAt) {
       return NextResponse.json({ error: 'No open attendance' }, { status: 404 });
+    }
+    if (open.checkOutAt) {
+      return NextResponse.json({ error: 'Attendance already has a checkout' }, { status: 409 });
+    }
+    const classified = withShiftCheckoutWindow(open);
+    if (isStaleMissingCheckout(classified, new Date())) {
+      return NextResponse.json(
+        { error: STALE_MISSING_CHECKOUT_ERROR, code: STALE_MISSING_CHECKOUT_CODE },
+        { status: 409 }
+      );
     }
 
     const calc = calculateAttendance({

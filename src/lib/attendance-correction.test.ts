@@ -42,12 +42,29 @@ describe('attendance correction', () => {
       }).ok,
       false
     );
+    const missingOut = planAttendanceCorrection({
+      employeeId: 'e1',
+      workDate: '2026-09-26',
+      reason: 'Punching Issue',
+      existingAssignment: { id: 'a1', status: 'SCHEDULED', shiftId: 's1' },
+      existingAttendance: { id: 'att1', checkInAt: new Date(), checkOutAt: null },
+      catalog,
+    });
+    assert.equal(missingOut.ok, true);
+    if (missingOut.ok) {
+      assert.equal(missingOut.mode, 'missing_out');
+      assert.equal(missingOut.existingAttendanceId, 'att1');
+    }
     const locked = planAttendanceCorrection({
       employeeId: 'e1',
       workDate: '2026-09-26',
       reason: 'Punching Issue',
       existingAssignment: { id: 'a1', status: 'SCHEDULED', shiftId: 's1' },
-      existingAttendance: { id: 'att1', checkInAt: new Date() },
+      existingAttendance: {
+        id: 'att1',
+        checkInAt: new Date(),
+        checkOutAt: new Date(),
+      },
       catalog,
     });
     assert.equal(locked.ok, false);
@@ -188,7 +205,13 @@ describe('attendance correction', () => {
             shiftId: 's1',
             projectId: 'p1',
             shift: shift1,
-            attendance: [{ id: 'att1', checkInAt: new Date('2026-09-26T12:40:00.000Z') }],
+            attendance: [
+              {
+                id: 'att1',
+                checkInAt: new Date('2026-09-26T12:40:00.000Z'),
+                checkOutAt: new Date('2026-09-22T00:30:00.000Z'),
+              },
+            ],
           }),
           create: async () => {
             throw new Error('should not create assignment');
@@ -216,6 +239,173 @@ describe('attendance correction', () => {
       reason: 'Punching Issue',
       checkInAt: new Date(),
       checkOutAt: null,
+      writeAudit: async () => {
+        throw new Error('should not audit overwrite');
+      },
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.status, 409);
+  });
+});
+
+describe('missing checkout correction', () => {
+  const originalCheckIn = parseAppDateTime('2026-09-26', '2026-09-26T15:40')!;
+  const actualOut = parseAppDateTime('2026-09-27', '2026-09-27T03:35')!;
+  const window = scheduledWindow('2026-09-26', '15:30', '03:30', true);
+
+  it('preserves original check-in and updates checkout + calculations + audit', async () => {
+    const updates: any[] = [];
+    const adjustments: any[] = [];
+    const audits: any[] = [];
+    const existing = {
+      id: 'att-open',
+      employeeId: 'e1',
+      checkInAt: originalCheckIn,
+      checkOutAt: null,
+      scheduledStart: window.scheduledStart,
+      scheduledEnd: window.scheduledEnd,
+      checkInMethod: 'QR',
+      checkInLatitude: 26.3,
+      checkInLongitude: 50.1,
+      checkInDeviceId: 'dev-1',
+      workedMinutes: null,
+      overtimeMinutes: 0,
+      earlyLeaveMinutes: 0,
+      statusPrimary: 'WORKING',
+      shift: shift1,
+    };
+    const result = await applyAttendanceCorrection({
+      db: {
+        employee: { findUnique: async () => ({ id: 'e1', defaultProjectId: 'p1' }) },
+        project: { findFirst: async () => ({ id: 'p1' }) },
+        employeeShiftAssignment: {
+          findFirst: async () => ({
+            id: 'a1',
+            status: 'SCHEDULED',
+            shiftId: 's1',
+            projectId: 'p1',
+            shift: shift1,
+            attendance: [existing],
+          }),
+          create: async () => {
+            throw new Error('should not create assignment');
+          },
+          update: async () => {
+            throw new Error('should not update assignment');
+          },
+        },
+        attendanceRecord: {
+          findFirst: async () => existing,
+          findUnique: async () => existing,
+          create: async () => {
+            throw new Error('should not create attendance');
+          },
+          update: async (args: any) => {
+            updates.push(args);
+            return { ...existing, ...args.data };
+          },
+        },
+        attendanceAdjustment: {
+          create: async (args: any) => {
+            adjustments.push(args.data);
+            return args.data;
+          },
+        },
+      },
+      catalog,
+      actorId: 'admin1',
+      employeeId: 'e1',
+      workDate: '2026-09-26',
+      attendanceId: 'att-open',
+      checkInAt: parseAppDateTime('2026-09-26', '2026-09-26T19:00'),
+      checkOutAt: actualOut,
+      reason: 'Forgot checkout',
+      writeAudit: async (row) => {
+        audits.push(row);
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].where.id, 'att-open');
+    assert.equal(updates[0].data.checkOutAt.toISOString(), actualOut.toISOString());
+    assert.equal(updates[0].data.checkOutMethod, 'MANUAL');
+    assert.equal(updates[0].data.manualOverride, true);
+    assert.equal(updates[0].data.checkInAt, undefined);
+    assert.equal(audits[0].action, 'ATTENDANCE_CORRECTED');
+    assert.equal(audits[0].oldValue.checkInAt, originalCheckIn.toISOString());
+    assert.equal(audits[0].newValue.checkInAt, originalCheckIn.toISOString());
+    assert.equal(audits[0].newValue.checkOutAt, actualOut.toISOString());
+    assert.equal(audits[0].newValue.reason, 'Forgot checkout');
+    assert.equal(adjustments[0].reason, 'Forgot checkout');
+    if (result.ok) {
+      assert.deepEqual(
+        result.calc,
+        calculateAttendance({
+          scheduledStart: window.scheduledStart,
+          scheduledEnd: window.scheduledEnd,
+          checkInAt: originalCheckIn,
+          checkOutAt: actualOut,
+          gracePeriodMinutes: 5,
+          manualCheckIn: false,
+          manualCheckOut: true,
+        })
+      );
+    }
+  });
+
+  it('cannot overwrite a record that already has checkout', async () => {
+    const existing = {
+      id: 'att-done',
+      employeeId: 'e1',
+      checkInAt: originalCheckIn,
+      checkOutAt: actualOut,
+      scheduledStart: window.scheduledStart,
+      scheduledEnd: window.scheduledEnd,
+    };
+    const result = await applyAttendanceCorrection({
+      db: {
+        employee: { findUnique: async () => ({ id: 'e1', defaultProjectId: 'p1' }) },
+        project: { findFirst: async () => ({ id: 'p1' }) },
+        employeeShiftAssignment: {
+          findFirst: async () => ({
+            id: 'a1',
+            status: 'SCHEDULED',
+            shiftId: 's1',
+            projectId: 'p1',
+            shift: shift1,
+            attendance: [existing],
+          }),
+          create: async () => {
+            throw new Error('should not create assignment');
+          },
+          update: async () => {
+            throw new Error('should not update assignment');
+          },
+        },
+        attendanceRecord: {
+          findFirst: async () => existing,
+          findUnique: async () => existing,
+          create: async () => {
+            throw new Error('should not create');
+          },
+          update: async () => {
+            throw new Error('should not update completed attendance');
+          },
+        },
+        attendanceAdjustment: {
+          create: async () => {
+            throw new Error('should not adjust');
+          },
+        },
+      },
+      catalog,
+      actorId: 'admin1',
+      employeeId: 'e1',
+      workDate: '2026-09-26',
+      attendanceId: 'att-done',
+      checkInAt: originalCheckIn,
+      checkOutAt: parseAppDateTime('2026-09-27', '2026-09-27T04:00'),
+      reason: 'Try overwrite',
       writeAudit: async () => {
         throw new Error('should not audit overwrite');
       },

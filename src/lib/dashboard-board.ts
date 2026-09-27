@@ -6,6 +6,7 @@ import {
 } from './day-status';
 import { addCalendarDays, calendarDateInAppZone, getAppTimezone } from './timezone';
 import { scheduledWindow } from './attendance-calc';
+import { isCurrentOpenAttendance, isStaleMissingCheckout } from './open-attendance';
 import { DateTime } from 'luxon';
 
 export type BoardPerson = {
@@ -24,6 +25,7 @@ export type BoardShift = {
   endTime: string;
   crossesMidnight: boolean;
   gracePeriodMinutes: number;
+  checkoutWindowAfterMinutes?: number | null;
 };
 
 export type BoardAssignment = {
@@ -57,6 +59,7 @@ export type BoardRow = {
   projectLocation: string | null;
   shiftKey: 'SHIFT_1' | 'SHIFT_2' | null;
   shiftLabel: string;
+  workDate: string;
   scheduledStart: string | null;
   checkInAt: string | null;
   checkOutAt: string | null;
@@ -100,7 +103,14 @@ export function matchesStatusFilter(
   filter: string
 ): boolean {
   if (filter === 'ALL') return true;
-  if (filter === 'WORKING') return !!row.checkInAt && !row.checkOutAt && row.statusPrimary !== 'ABSENT';
+  if (filter === 'WORKING') {
+    return (
+      !!row.checkInAt &&
+      !row.checkOutAt &&
+      row.statusPrimary !== 'ABSENT' &&
+      row.statusPrimary !== 'MISSING_CHECKOUT'
+    );
+  }
   if (filter === 'ON_TIME') return row.statusPrimary === 'ON_TIME' || row.statusPrimary === 'PRESENT';
   return row.statusPrimary === filter;
 }
@@ -219,14 +229,22 @@ export function buildTonightBoard(input: {
 
     if (punch?.checkInAt) {
       present += 1;
+      const openState = {
+        checkInAt: punch.checkInAt,
+        checkOutAt: punch.checkOutAt,
+        scheduledEnd: window.scheduledEnd,
+        checkoutWindowAfterMinutes: a.shift.checkoutWindowAfterMinutes,
+      };
+      const currentOpen = isCurrentOpenAttendance(openState, input.now);
+      const staleMissing = isStaleMissingCheckout(openState, input.now);
       const holidayOt =
         day.holidayWork && punch.workedMinutes != null ? punch.workedMinutes : punch.overtimeMinutes;
       if (punch.lateMinutes > 0) late += 1;
-      if (holidayOt > 0) overtime += 1;
+      if (!staleMissing && holidayOt > 0) overtime += 1;
       if (!punch.checkOutAt) {
-        if (input.now > window.scheduledEnd) {
+        if (staleMissing) {
           missingCheckout += 1;
-        } else {
+        } else if (currentOpen) {
           working += 1;
           currentlyWorking.push({
             id: punch.id,
@@ -250,28 +268,33 @@ export function buildTonightBoard(input: {
         projectLocation: a.project.locationLabel,
         shiftKey,
         shiftLabel,
+        workDate: a.workDate,
         scheduledStart: window.scheduledStart.toISOString(),
         checkInAt: punch.checkInAt.toISOString(),
         checkOutAt: punch.checkOutAt ? punch.checkOutAt.toISOString() : null,
-        workedMinutes: punch.workedMinutes,
+        workedMinutes: staleMissing ? null : punch.workedMinutes,
         lateMinutes: punch.lateMinutes,
-        overtimeMinutes: holidayOt,
-        earlyLeaveMinutes: punch.earlyLeaveMinutes,
-        statusPrimary: day.holidayWork
-          ? 'HOLIDAY_WORK'
-          : punch.checkOutAt
-            ? punch.statusPrimary
-            : input.now > window.scheduledEnd
-              ? 'MISSING_CHECKOUT'
+        overtimeMinutes: staleMissing ? 0 : holidayOt,
+        earlyLeaveMinutes: staleMissing ? 0 : punch.earlyLeaveMinutes,
+        statusPrimary: staleMissing
+          ? 'MISSING_CHECKOUT'
+          : day.holidayWork
+            ? 'HOLIDAY_WORK'
+            : punch.checkOutAt
+              ? punch.statusPrimary
               : punch.lateMinutes > 0
                 ? 'LATE'
                 : 'WORKING',
         flags: (() => {
           try {
             const parsed = JSON.parse(punch.flags || '[]');
-            return day.holidayWork ? [...parsed, 'HOLIDAY_WORK'] : parsed;
+            return staleMissing
+              ? ['MISSING_CHECKOUT']
+              : day.holidayWork
+                ? [...parsed, 'HOLIDAY_WORK']
+                : parsed;
           } catch {
-            return day.holidayWork ? ['HOLIDAY_WORK'] : [];
+            return staleMissing ? ['MISSING_CHECKOUT'] : day.holidayWork ? ['HOLIDAY_WORK'] : [];
           }
         })(),
         manualOverride: !!punch.manualOverride,
@@ -290,6 +313,7 @@ export function buildTonightBoard(input: {
         projectLocation: a.project.locationLabel,
         shiftKey,
         shiftLabel,
+        workDate: a.workDate,
         scheduledStart: window.scheduledStart.toISOString(),
         checkInAt: null,
         checkOutAt: null,
@@ -316,6 +340,7 @@ export function buildTonightBoard(input: {
       projectLocation: a.project.locationLabel,
       shiftKey,
       shiftLabel,
+      workDate: a.workDate,
       scheduledStart: window.scheduledStart.toISOString(),
       checkInAt: null,
       checkOutAt: null,

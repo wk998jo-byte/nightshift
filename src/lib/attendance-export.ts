@@ -8,6 +8,7 @@ import {
   halfDayWindow,
   type DayExceptionRecord,
 } from './day-status';
+import { isStaleMissingCheckout } from './open-attendance';
 
 export const MAX_EXPORT_DAYS = 366;
 export const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -52,6 +53,7 @@ export type ExportAssignment = {
     endTime: string;
     crossesMidnight: boolean;
     gracePeriodMinutes: number;
+    checkoutWindowAfterMinutes?: number | null;
   };
   attendance: Array<{
     checkInAt: Date | string | null;
@@ -270,6 +272,30 @@ export function buildExportRows(
     };
 
     if (checkInAt && punch) {
+      if (
+        isStaleMissingCheckout(
+          {
+            checkInAt,
+            checkOutAt,
+            scheduledEnd: window.scheduledEnd,
+            checkoutWindowAfterMinutes: a.shift.checkoutWindowAfterMinutes,
+          },
+          now
+        )
+      ) {
+        rows.push({
+          ...base,
+          checkIn: formatTime(checkInAt),
+          checkOut: '—',
+          worked: '—',
+          late: String(punch.lateMinutes),
+          earlyLeave: '—',
+          ot: '—',
+          status: 'MISSING_CHECKOUT',
+          flags: 'MISSING_CHECKOUT',
+        });
+        continue;
+      }
       const ot = day.holidayWork && punch.workedMinutes != null ? punch.workedMinutes : punch.overtimeMinutes;
       const status = day.holidayWork ? 'HOLIDAY_WORK' : day.exception && day.excused ? day.status : punch.statusPrimary;
       const flags = [parseFlags(punch.flags), day.holidayWork ? 'HOLIDAY_WORK' : '', day.exception && day.excused && !day.holidayWork ? day.status : '']

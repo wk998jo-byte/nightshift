@@ -15,14 +15,16 @@ export async function POST(req: NextRequest) {
   const workDate = String(body.workDate || '');
   const choice = body.choice ? String(body.choice) : undefined;
   const reason = String(body.reason || '');
-  const checkInAt = parseAppDateTime(workDate, String(body.checkInAt || ''));
+  const attendanceId = body.attendanceId ? String(body.attendanceId) : undefined;
+  const checkInRaw = String(body.checkInAt || '').trim();
   const checkOutRaw = String(body.checkOutAt || '').trim();
+  const checkInAt = checkInRaw ? parseAppDateTime(workDate, checkInRaw) : null;
   const checkOutAt = checkOutRaw ? parseAppDateTime(workDate, checkOutRaw) : null;
 
   if (!employeeId || !workDate) {
     return NextResponse.json({ error: 'employeeId and workDate are required' }, { status: 400 });
   }
-  if (!checkInAt) return NextResponse.json({ error: 'Valid check-in is required' }, { status: 400 });
+  if (checkInRaw && !checkInAt) return NextResponse.json({ error: 'Valid check-in is required' }, { status: 400 });
   if (checkOutRaw && !checkOutAt) {
     return NextResponse.json({ error: 'Invalid check-out' }, { status: 400 });
   }
@@ -36,6 +38,7 @@ export async function POST(req: NextRequest) {
     employeeId,
     workDate,
     choice,
+    attendanceId,
     checkInAt,
     checkOutAt,
     reason,

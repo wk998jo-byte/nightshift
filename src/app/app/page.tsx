@@ -7,6 +7,7 @@ import { lateMinutesAfterGrace } from '@/lib/attendance-calc';
 import { getBrowserDeviceId } from '@/lib/browser-device-id';
 import { startQrScanner, stopMediaStream, type BarcodeDetectorLike } from '@/lib/qr-scanner';
 import { completeLogout, employeeTodayFetchInit } from '@/lib/session-policy';
+import BfCacheReload from '@/components/bfcache-reload';
 
 type Timing = {
   phase: 'early' | 'on_time' | 'late' | 'in_shift';
@@ -47,6 +48,12 @@ type Today = {
   timing: Timing | null;
   scheduleState?: 'SCHEDULED' | 'OFF_DAY' | 'NO_SCHEDULE';
   scheduleMessage?: string | null;
+  previousMissingCheckout?: {
+    attendanceId: string;
+    workDate: string;
+    checkInAt: string;
+    scheduledEnd: string;
+  } | null;
   history: Array<{
     id: string;
     project: string;
@@ -213,6 +220,8 @@ export default function EmployeeAppPage() {
         nextMode === 'in' ? '/api/attendance/check-in' : '/api/attendance/check-out';
       const res = await fetch(endpoint, {
         method: 'POST',
+        credentials: 'include',
+        cache: 'no-store',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token, ...gps, deviceId: getBrowserDeviceId() }),
       });
@@ -284,6 +293,7 @@ export default function EmployeeAppPage() {
 
   return (
     <main className="mesh-bg min-h-screen pb-24">
+      <BfCacheReload />
       <header className="relative overflow-hidden px-5 pb-8 pt-5">
         <div className="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-[#C8102E]/[0.07]" />
         <div className="absolute -left-8 top-24 h-28 w-28 rounded-full bg-slate-300/30" />
@@ -428,6 +438,12 @@ export default function EmployeeAppPage() {
               ) : null}
               {error ? (
                 <p className="mb-4 rounded-2xl bg-rose-50 p-3 text-sm text-rose-600">{error}</p>
+              ) : null}
+
+              {!active && data.previousMissingCheckout ? (
+                <p className="mb-4 rounded-2xl bg-amber-50 p-3 text-sm text-amber-800">
+                  Previous shift has a missing checkout. Supervisor correction required.
+                </p>
               ) : null}
 
               {!active && (offDay || noSchedule) ? (

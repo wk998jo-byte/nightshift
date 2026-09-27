@@ -5,6 +5,11 @@ import { formatDuration, formatTime } from '@/lib/attendance-calc';
 import { getTonightAssignment } from '@/lib/schedule';
 import { getShiftTiming } from '@/lib/schedule-timing';
 import { todayNoStoreHeaders } from '@/lib/session-policy';
+import {
+  employeeOpenShiftFromRecords,
+  previousMissingCheckoutMeta,
+  withShiftCheckoutWindow,
+} from '@/lib/open-attendance';
 
 export async function GET() {
   const headers = todayNoStoreHeaders();
@@ -19,14 +24,18 @@ export async function GET() {
   });
   if (!employee) return NextResponse.json({ error: 'Not found' }, { status: 404, headers });
 
-  const open = await prisma.attendanceRecord.findFirst({
+  const openRecords = await prisma.attendanceRecord.findMany({
     where: {
       employeeId: employee.id,
       checkInAt: { not: null },
       checkOutAt: null,
     },
-    include: { project: true, shift: true },
+    include: { project: true, shift: true, assignment: { select: { workDate: true } } },
   });
+  const classified = openRecords.map((row) => withShiftCheckoutWindow(row));
+  const now = new Date();
+  const open = employeeOpenShiftFromRecords(classified, now);
+  const previousMissingCheckout = previousMissingCheckoutMeta(classified, now);
 
   const lookup = await getTonightAssignment(employee.id, new Date());
 
@@ -113,6 +122,7 @@ export async function GET() {
           ? 'You are scheduled OFF today.'
           : null,
     timing,
+    previousMissingCheckout,
     serverNow: new Date().toISOString(),
     history: history.map((h) => ({
       id: h.id,

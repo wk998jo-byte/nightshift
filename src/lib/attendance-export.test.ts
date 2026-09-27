@@ -456,6 +456,38 @@ describe('export administrative statuses', () => {
     assert.equal(rows[1].status, 'ABSENT');
   });
 
+  it('stale missing checkout exports dashes instead of a long worked duration', () => {
+    const rows = buildExportRows(
+      [
+        asg({
+          workDate: '2026-09-21',
+          employee: person('Abdulaziz Abdullah H AlZahrani', '71326'),
+          shift: { ...shift1, checkoutWindowAfterMinutes: 180 },
+          attendance: [
+            {
+              checkInAt: new Date('2026-09-21T12:40:00.000Z'),
+              checkOutAt: null,
+              workedMinutes: 1455,
+              lateMinutes: 10,
+              earlyLeaveMinutes: 0,
+              overtimeMinutes: 745,
+              statusPrimary: 'WORKING',
+              flags: '["WORKING"]',
+            },
+          ],
+        }),
+      ],
+      new Date('2026-09-22T05:00:00.000Z')
+    );
+    assert.equal(rows[0].status, 'MISSING_CHECKOUT');
+    assert.notEqual(rows[0].checkIn, '—');
+    assert.equal(rows[0].checkOut, '—');
+    assert.equal(rows[0].worked, '—');
+    assert.equal(rows[0].ot, '—');
+    assert.equal(rows[0].earlyLeave, '—');
+    assert.notEqual(rows[0].worked, '24h 15m');
+  });
+
   it('explicit ABSENT exception is exported as ABSENT', () => {
     const rows = buildExportRows(
       [

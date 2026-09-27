@@ -3,6 +3,7 @@ import { getSession } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { boardWorkDate, buildTonightBoard, pickActiveTerminal } from '@/lib/dashboard-board';
 import { SHIFT_SCHEDULE_EMPLOYEE_WHERE } from '@/lib/shift-catalog';
+import { todayNoStoreHeaders } from '@/lib/session-policy';
 
 export async function GET(req: NextRequest) {
   const auth = await getSession();
@@ -62,21 +63,24 @@ export async function GET(req: NextRequest) {
     },
   });
 
-  return NextResponse.json({
-    workDate,
-    summary: {
-      scheduled: board.scheduled.length,
-      present: board.present,
-      late: board.late,
-      absent: board.absent,
-      overtime: board.overtime,
-      missingCheckout: board.missingCheckout,
-      working: board.working,
+  return NextResponse.json(
+    {
+      workDate,
+      summary: {
+        scheduled: board.scheduled.length,
+        present: board.present,
+        late: board.late,
+        absent: board.absent,
+        overtime: board.overtime,
+        missingCheckout: board.missingCheckout,
+        working: board.working,
+      },
+      currentlyWorking: board.currentlyWorking,
+      records: board.rows,
+      absent: board.absentRows,
+      qrTerminal,
+      activeEmployees,
     },
-    currentlyWorking: board.currentlyWorking,
-    records: board.rows,
-    absent: board.absentRows,
-    qrTerminal,
-    activeEmployees,
-  });
+    { headers: todayNoStoreHeaders() }
+  );
 }

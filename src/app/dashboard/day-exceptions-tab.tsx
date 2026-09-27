@@ -28,7 +28,11 @@ const EXCEPTION_TYPES = [
   ['RELEASED', 'Released'],
 ] as const;
 
-export default function DayExceptionsTab() {
+export default function DayExceptionsTab({
+  correctionPrefill,
+}: {
+  correctionPrefill?: { employeeId: string; workDate: string; attendanceId: string } | null;
+}) {
   const today = new Date().toISOString().slice(0, 10);
   const [workDate, setWorkDate] = useState(today);
   const [scope, setScope] = useState<'HOLIDAY' | 'EMPLOYEE'>('HOLIDAY');
@@ -49,6 +53,7 @@ export default function DayExceptionsTab() {
   const [corrIn, setCorrIn] = useState('');
   const [corrOut, setCorrOut] = useState('');
   const [corrReason, setCorrReason] = useState('Punching Issue');
+  const [corrAttendanceId, setCorrAttendanceId] = useState('');
 
   const load = useCallback(async (date: string) => {
     const res = await fetch(`/api/day-exceptions?date=${encodeURIComponent(date)}`);
@@ -64,6 +69,17 @@ export default function DayExceptionsTab() {
   useEffect(() => {
     void load(workDate);
   }, [load, workDate]);
+
+  useEffect(() => {
+    if (!correctionPrefill) return;
+    setCorrEmployeeId(correctionPrefill.employeeId);
+    setCorrDate(correctionPrefill.workDate);
+    setCorrAttendanceId(correctionPrefill.attendanceId);
+    setCorrIn('');
+    setCorrOut('');
+    setCorrReason('Missing checkout correction');
+    void load(correctionPrefill.workDate);
+  }, [correctionPrefill, load]);
 
   async function saveException() {
     setBusy(true);
@@ -115,6 +131,7 @@ export default function DayExceptionsTab() {
         employeeId: corrEmployeeId,
         workDate: corrDate,
         choice: corrChoice,
+        attendanceId: corrAttendanceId || undefined,
         checkInAt: corrIn,
         checkOutAt: corrOut,
         reason: corrReason,
@@ -277,6 +294,11 @@ export default function DayExceptionsTab() {
           Attendance Correction / Punching Issue
         </p>
         <h2 className="mb-4 text-lg font-bold text-slate-900">Correct missed IN/OUT</h2>
+        {corrAttendanceId ? (
+          <p className="mb-3 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            Missing checkout: original check-in is kept. Enter the actual OUT time and a reason.
+          </p>
+        ) : null}
         <div className="grid gap-3 md:grid-cols-2">
           <label className="text-sm font-medium text-slate-600">
             Employee

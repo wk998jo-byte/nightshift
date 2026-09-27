@@ -7,7 +7,7 @@ export type CorrectionInput = {
   employeeId: string;
   workDate: string;
   choice?: Exclude<ShiftChoice, 'OFF'>;
-  checkInAt: Date;
+  checkInAt: Date | null;
   checkOutAt: Date | null;
   reason: string;
 };
@@ -16,6 +16,7 @@ export type CorrectionDecision =
   | { ok: false; error: string; status: number }
   | {
       ok: true;
+      mode: 'create' | 'missing_out';
       needsAssignment: boolean;
       choice: Exclude<ShiftChoice, 'OFF'>;
       existingAttendanceId: string | null;
@@ -31,31 +32,51 @@ export function parseAppDateTime(workDate: string, value: string): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function plannedChoice(
+  choice: string | undefined,
+  fallback: 'SHIFT_1' | 'SHIFT_2' = 'SHIFT_1'
+): 'SHIFT_1' | 'SHIFT_2' {
+  return choice === 'SHIFT_2' ? 'SHIFT_2' : fallback;
+}
+
 export function planAttendanceCorrection(input: {
   employeeId: string;
   workDate: string;
   choice?: string;
   reason: string;
   existingAssignment: { id: string; status: string; shiftId: string } | null;
-  existingAttendance: { id: string; checkInAt: Date | null } | null;
+  existingAttendance: { id: string; checkInAt: Date | null; checkOutAt?: Date | null } | null;
   catalog: ShiftCatalog;
 }): CorrectionDecision {
   if (!input.reason.trim()) return { ok: false, error: 'Reason is required', status: 400 };
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.workDate)) {
     return { ok: false, error: 'Invalid workDate', status: 400 };
   }
-  if (input.existingAttendance?.checkInAt) {
+
+  if (input.existingAttendance?.checkInAt && input.existingAttendance.checkOutAt) {
     return {
       ok: false,
-      error: 'Attendance already exists for this date. Use attendance adjustment workflow.',
+      error: 'Attendance already has a checkout. This workflow cannot overwrite it.',
       status: 409,
     };
   }
+
+  if (input.existingAttendance?.checkInAt && !input.existingAttendance.checkOutAt) {
+    return {
+      ok: true,
+      mode: 'missing_out',
+      needsAssignment: false,
+      choice: plannedChoice(input.choice),
+      existingAttendanceId: input.existingAttendance.id,
+    };
+  }
+
   if (input.existingAssignment && input.existingAssignment.status === 'SCHEDULED') {
     return {
       ok: true,
+      mode: 'create',
       needsAssignment: false,
-      choice: (input.choice === 'SHIFT_2' ? 'SHIFT_2' : 'SHIFT_1') as 'SHIFT_1' | 'SHIFT_2',
+      choice: plannedChoice(input.choice),
       existingAttendanceId: input.existingAttendance?.id ?? null,
     };
   }
@@ -68,6 +89,7 @@ export function planAttendanceCorrection(input: {
   }
   return {
     ok: true,
+    mode: 'create',
     needsAssignment: !input.existingAssignment || input.existingAssignment.status !== 'SCHEDULED',
     choice,
     existingAttendanceId: input.existingAttendance?.id ?? null,
@@ -82,6 +104,7 @@ export function correctionCalc(input: {
   gracePeriodMinutes: number;
   checkInAt: Date;
   checkOutAt: Date | null;
+  manualCheckIn?: boolean;
 }) {
   const window = scheduledWindow(input.workDate, input.startTime, input.endTime, input.crossesMidnight);
   return {
@@ -92,7 +115,7 @@ export function correctionCalc(input: {
       checkInAt: input.checkInAt,
       checkOutAt: input.checkOutAt,
       gracePeriodMinutes: input.gracePeriodMinutes,
-      manualCheckIn: true,
+      manualCheckIn: input.manualCheckIn ?? true,
       manualCheckOut: !!input.checkOutAt,
     }),
     method: AttendanceMethod.MANUAL,
@@ -109,7 +132,9 @@ export type CorrectionDb = {
   };
   attendanceRecord: {
     findFirst: (args?: any) => Promise<any>;
+    findUnique?: (args?: any) => Promise<any>;
     create: (args?: any) => Promise<any>;
+    update?: (args?: any) => Promise<any>;
   };
   attendanceAdjustment: { create: (args?: any) => Promise<any> };
 };
@@ -121,7 +146,8 @@ export async function applyAttendanceCorrection(input: {
   employeeId: string;
   workDate: string;
   choice?: string;
-  checkInAt: Date;
+  attendanceId?: string;
+  checkInAt: Date | null;
   checkOutAt: Date | null;
   reason: string;
   writeAudit: (row: {
@@ -142,13 +168,26 @@ export async function applyAttendanceCorrection(input: {
 
   const existingAssignment = await input.db.employeeShiftAssignment.findFirst({
     where: { employeeId: input.employeeId, workDate: input.workDate },
-    include: { shift: true, attendance: { select: { id: true, checkInAt: true } } },
+    include: { shift: true, attendance: true },
   });
-  const existingAttendance =
+
+  let existingAttendance =
+    (input.attendanceId && input.db.attendanceRecord.findUnique
+      ? await input.db.attendanceRecord.findUnique({ where: { id: input.attendanceId } })
+      : null) ||
     existingAssignment?.attendance?.find((row: { checkInAt: Date | null }) => row.checkInAt) ||
     (await input.db.attendanceRecord.findFirst({
       where: { employeeId: input.employeeId, assignment: { workDate: input.workDate } },
     }));
+
+  if (input.attendanceId && existingAttendance && existingAttendance.id !== input.attendanceId) {
+    existingAttendance = input.db.attendanceRecord.findUnique
+      ? await input.db.attendanceRecord.findUnique({ where: { id: input.attendanceId } })
+      : existingAttendance;
+  }
+  if (existingAttendance && existingAttendance.employeeId && existingAttendance.employeeId !== input.employeeId) {
+    return { ok: false as const, error: 'Attendance does not belong to this employee', status: 404 };
+  }
 
   const decision = planAttendanceCorrection({
     employeeId: input.employeeId,
@@ -159,11 +198,114 @@ export async function applyAttendanceCorrection(input: {
       ? { id: existingAssignment.id, status: existingAssignment.status, shiftId: existingAssignment.shiftId }
       : null,
     existingAttendance: existingAttendance
-      ? { id: existingAttendance.id, checkInAt: existingAttendance.checkInAt }
+      ? {
+          id: existingAttendance.id,
+          checkInAt: existingAttendance.checkInAt,
+          checkOutAt: existingAttendance.checkOutAt ?? null,
+        }
       : null,
     catalog: input.catalog,
   });
   if (!decision.ok) return decision;
+
+  if (decision.mode === 'missing_out') {
+    if (!input.checkOutAt) {
+      return { ok: false as const, error: 'Actual check-out is required', status: 400 };
+    }
+    if (!existingAttendance?.checkInAt) {
+      return { ok: false as const, error: 'Missing checkout record not found', status: 404 };
+    }
+    if (existingAttendance.checkOutAt) {
+      return {
+        ok: false as const,
+        error: 'Attendance already has a checkout. This workflow cannot overwrite it.',
+        status: 409,
+      };
+    }
+    if (!input.db.attendanceRecord.update) {
+      return { ok: false as const, error: 'Correction update is unavailable', status: 500 };
+    }
+
+    const shift = existingAssignment?.shift || existingAttendance.shift;
+    const grace = shift?.gracePeriodMinutes ?? 5;
+    const scheduledStart = existingAttendance.scheduledStart;
+    const scheduledEnd = existingAttendance.scheduledEnd;
+    const originalCheckIn = existingAttendance.checkInAt;
+    const calc = calculateAttendance({
+      scheduledStart,
+      scheduledEnd,
+      checkInAt: originalCheckIn,
+      checkOutAt: input.checkOutAt,
+      gracePeriodMinutes: grace,
+      manualCheckIn: existingAttendance.checkInMethod === AttendanceMethod.MANUAL,
+      manualCheckOut: true,
+    });
+    const flags: string[] = [...calc.flags];
+    if (!flags.includes('PUNCHING_ISSUE')) flags.push('PUNCHING_ISSUE');
+
+    const oldValue = {
+      checkInAt: originalCheckIn.toISOString(),
+      checkOutAt: null,
+      workedMinutes: existingAttendance.workedMinutes ?? null,
+      overtimeMinutes: existingAttendance.overtimeMinutes ?? null,
+      earlyLeaveMinutes: existingAttendance.earlyLeaveMinutes ?? null,
+      statusPrimary: existingAttendance.statusPrimary,
+    };
+
+    const record = await input.db.attendanceRecord.update({
+      where: { id: existingAttendance.id },
+      data: {
+        checkOutAt: input.checkOutAt,
+        checkOutMethod: AttendanceMethod.MANUAL,
+        workedMinutes: calc.workedMinutes,
+        lateMinutes: calc.lateMinutes,
+        earlyLeaveMinutes: calc.earlyLeaveMinutes,
+        overtimeMinutes: calc.overtimeMinutes,
+        flags: JSON.stringify(flags),
+        statusPrimary: calc.statusPrimary,
+        manualOverride: true,
+      },
+    });
+
+    await input.db.attendanceAdjustment.create({
+      data: {
+        attendanceId: existingAttendance.id,
+        field: 'checkOutAt',
+        oldValue: null,
+        newValue: JSON.stringify({
+          checkInAt: originalCheckIn.toISOString(),
+          checkOutAt: input.checkOutAt.toISOString(),
+          workDate: input.workDate,
+        }),
+        reason: input.reason.trim(),
+        changedById: input.actorId,
+      },
+    });
+
+    await input.writeAudit({
+      actorId: input.actorId,
+      action: 'ATTENDANCE_CORRECTED',
+      entityType: 'AttendanceRecord',
+      entityId: existingAttendance.id,
+      employeeId: input.employeeId,
+      oldValue,
+      newValue: {
+        workDate: input.workDate,
+        reason: input.reason.trim(),
+        checkInAt: originalCheckIn.toISOString(),
+        checkOutAt: input.checkOutAt.toISOString(),
+        attendanceId: existingAttendance.id,
+        workedMinutes: calc.workedMinutes,
+        overtimeMinutes: calc.overtimeMinutes,
+        earlyLeaveMinutes: calc.earlyLeaveMinutes,
+        statusPrimary: calc.statusPrimary,
+      },
+    });
+
+    return { ok: true as const, record, assignment: existingAssignment, calc };
+  }
+
+  if (!input.checkInAt) return { ok: false as const, error: 'Valid check-in is required', status: 400 };
 
   const shift =
     existingAssignment?.status === 'SCHEDULED'

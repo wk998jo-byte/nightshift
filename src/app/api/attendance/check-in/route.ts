@@ -9,6 +9,7 @@ import { getShiftTiming } from '@/lib/schedule-timing';
 import { fingerprintFromRequest, hashToken, verifyQrToken } from '@/lib/security';
 import { observePunchDevice, recordDeviceWarnings } from '@/lib/device-security';
 import { AttendanceMethod } from '@prisma/client';
+import { checkInBlockedBy, withShiftCheckoutWindow } from '@/lib/open-attendance';
 
 type Body = {
   token?: string;
@@ -96,10 +97,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Employee inactive' }, { status: 403 });
   }
 
-  const open = await prisma.attendanceRecord.findFirst({
+  const openRecords = await prisma.attendanceRecord.findMany({
     where: { employeeId: employee.id, checkInAt: { not: null }, checkOutAt: null },
+    include: { shift: true },
   });
-  if (open) {
+  const blocking = checkInBlockedBy(
+    openRecords.map((row) => withShiftCheckoutWindow(row)),
+    new Date()
+  );
+  if (blocking) {
     return NextResponse.json(
       { error: 'You already have an open shift. End it first.' },
       { status: 409 }

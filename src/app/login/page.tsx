@@ -8,6 +8,7 @@ import {
   loginLandingPath,
   shouldStayOnLoginAfterLogout,
 } from '@/lib/session-policy';
+import BfCacheReload from '@/components/bfcache-reload';
 
 export default function LoginPage() {
   const [username, setUsername] = useState('');
@@ -65,6 +66,7 @@ export default function LoginPage() {
 
   return (
     <main className="mesh-bg flex min-h-screen items-center justify-center p-4">
+      <BfCacheReload />
       <div className="w-full max-w-md animate-fade-up">
         <div className="mb-6 flex justify-center">
           <Logo width={280} height={100} />
