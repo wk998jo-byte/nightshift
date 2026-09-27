@@ -6,9 +6,11 @@ import {
   type DayExceptionType,
 } from './day-status';
 import {
+  checkInBlockedBy,
   isCurrentOpenAttendance,
   isStaleMissingCheckout,
   DEFAULT_CHECKOUT_WINDOW_AFTER_MINUTES,
+  type ClassifiableAttendance,
 } from './open-attendance';
 import type { ScheduleKind } from './schedule-lookup';
 
@@ -20,6 +22,8 @@ export const CHECKIN_TOO_EARLY_CODE = 'CHECKIN_TOO_EARLY';
 export const EXCUSED_DAY_CODE = 'EXCUSED_DAY';
 export const EXCUSED_DAY_ERROR =
   'An approved day status exists. Contact your supervisor if you are required to work.';
+export const CURRENT_OPEN_CODE = 'CURRENT_OPEN';
+export const CURRENT_OPEN_ERROR = 'You already have an open shift. End it first.';
 
 export const QR_BLOCKING_EXCEPTION_TYPES: DayExceptionType[] = [
   'SICK_LEAVE',
@@ -116,7 +120,8 @@ export type NormalCheckInDecision =
         | 'OFF_DAY'
         | typeof EXCUSED_DAY_CODE
         | typeof CHECKIN_TOO_EARLY_CODE
-        | typeof SHIFT_ENDED_CODE;
+        | typeof SHIFT_ENDED_CODE
+        | typeof CURRENT_OPEN_CODE;
       error: string;
       minutesUntilOpen?: number;
       opensAt?: string;
@@ -169,6 +174,24 @@ export function evaluateNormalQrCheckIn(input: {
     };
   }
   return { ok: true, scheduledStart: window.scheduledStart, scheduledEnd: window.scheduledEnd };
+}
+
+/** Live QR and manual check-in share this gate. Historical punches go through Attendance Correction. */
+export function evaluateLiveCheckIn(input: {
+  scheduleKind: ScheduleKind;
+  now: Date;
+  workDate: string;
+  startTime: string;
+  endTime: string;
+  crossesMidnight: boolean;
+  checkinWindowBeforeMinutes?: number | null;
+  exception?: DayExceptionRecord | null;
+  openRecords?: ClassifiableAttendance[];
+}): NormalCheckInDecision {
+  if (checkInBlockedBy(input.openRecords || [], input.now)) {
+    return { ok: false, code: CURRENT_OPEN_CODE, error: CURRENT_OPEN_ERROR };
+  }
+  return evaluateNormalQrCheckIn(input);
 }
 
 export function parseStoredFlags(raw: string | string[] | null | undefined): string[] {

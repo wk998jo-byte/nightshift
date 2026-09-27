@@ -4,10 +4,12 @@ import { DateTime } from 'luxon';
 import { calculateAttendance, scheduledWindow } from './attendance-calc';
 import {
   CHECKIN_TOO_EARLY_CODE,
+  CURRENT_OPEN_CODE,
   EXCUSED_DAY_CODE,
   SHIFT_ENDED_CODE,
   effectiveScheduledWindow,
   employeeCheckInTimingView,
+  evaluateLiveCheckIn,
   evaluateNormalQrCheckIn,
   flagsForOpenPunch,
   resolveAttendanceDisplay,
@@ -429,5 +431,143 @@ describe('employee UI after shift end', () => {
     assert.equal(view.showLateMinutes, true);
     assert.equal(view.lateMinutes, 6);
     assert.equal(view.startDisabled, false);
+  });
+});
+
+function manual(
+  now: Date,
+  exception?: DayExceptionRecord | null,
+  openRecords: Parameters<typeof evaluateLiveCheckIn>[0]['openRecords'] = []
+) {
+  return evaluateLiveCheckIn({
+    scheduleKind: 'SCHEDULED',
+    now,
+    workDate,
+    startTime: '15:30',
+    endTime: '03:30',
+    crossesMidnight: true,
+    checkinWindowBeforeMinutes: 30,
+    exception,
+    openRecords,
+  });
+}
+
+describe('manual check-in uses the same live eligibility as QR', () => {
+  it('manual scheduled assignment required', () => {
+    const decision = evaluateLiveCheckIn({
+      scheduleKind: 'NO_SCHEDULE',
+      now: riyadh(`${workDate}T16:00:00`),
+      workDate,
+      startTime: '15:30',
+      endTime: '03:30',
+      crossesMidnight: true,
+    });
+    assert.equal(decision.ok, false);
+    if (!decision.ok) assert.equal(decision.code, 'NO_SCHEDULE');
+  });
+
+  it('manual OFF denied', () => {
+    const decision = evaluateLiveCheckIn({
+      scheduleKind: 'OFF_DAY',
+      now: riyadh(`${workDate}T16:00:00`),
+      workDate,
+      startTime: '15:30',
+      endTime: '03:30',
+      crossesMidnight: true,
+    });
+    assert.equal(decision.ok, false);
+    if (!decision.ok) assert.equal(decision.code, 'OFF_DAY');
+  });
+
+  it('manual too early denied', () => {
+    const decision = manual(riyadh(`${workDate}T14:59:00`));
+    assert.equal(decision.ok, false);
+    if (!decision.ok) assert.equal(decision.code, CHECKIN_TOO_EARLY_CODE);
+  });
+
+  it('manual after shift end denied', () => {
+    const decision = manual(riyadh('2026-09-27T03:31:00'));
+    assert.equal(decision.ok, false);
+    if (!decision.ok) assert.equal(decision.code, SHIFT_ENDED_CODE);
+  });
+
+  it('manual Sick/Vacation/etc denied', () => {
+    for (const type of [
+      'SICK_LEAVE',
+      'VACATION',
+      'UMRA_LEAVE',
+      'EMERGENCY_VACATION',
+      'RELEASED',
+      'NEW',
+    ] as const) {
+      const decision = manual(riyadh(`${workDate}T16:00:00`), {
+        workDate,
+        employeeId: 'e1',
+        type,
+      });
+      assert.equal(decision.ok, false, type);
+      if (!decision.ok) assert.equal(decision.code, EXCUSED_DAY_CODE);
+    }
+  });
+
+  it('manual Holiday allowed', () => {
+    const decision = manual(riyadh(`${workDate}T16:00:00`), {
+      workDate,
+      employeeId: null,
+      type: 'HOLIDAY',
+    });
+    assert.equal(decision.ok, true);
+  });
+
+  it('manual Half Day uses approved window', () => {
+    const exception: DayExceptionRecord = {
+      workDate,
+      employeeId: 'e1',
+      type: 'HALF_DAY',
+      expectedStartTime: '15:30',
+      expectedEndTime: '19:30',
+    };
+    const half = halfDayWindow(workDate, exception, '15:30', '03:30', true);
+    const allowed = manual(riyadh(`${workDate}T16:00:00`), exception);
+    assert.equal(allowed.ok, true);
+    if (allowed.ok) {
+      assert.equal(allowed.scheduledStart.toISOString(), half.scheduledStart.toISOString());
+      assert.equal(allowed.scheduledEnd.toISOString(), half.scheduledEnd.toISOString());
+    }
+    const ended = manual(riyadh(`${workDate}T19:31:00`), exception);
+    assert.equal(ended.ok, false);
+    if (!ended.ok) assert.equal(ended.code, SHIFT_ENDED_CODE);
+  });
+
+  it('stale previous missing checkout does not block manual check-in', () => {
+    const decision = manual(riyadh(`${workDate}T16:00:00`), null, [
+      {
+        id: 'att-stale',
+        checkInAt: riyadh('2026-09-25T15:30:00'),
+        checkOutAt: null,
+        scheduledEnd: riyadh('2026-09-26T03:30:00'),
+        checkoutWindowAfterMinutes: 180,
+        workDate: '2026-09-25',
+      },
+    ]);
+    assert.equal(decision.ok, true);
+  });
+
+  it('current open does block it', () => {
+    const decision = manual(riyadh(`${workDate}T16:00:00`), null, [
+      {
+        id: 'att-open',
+        checkInAt: riyadh(`${workDate}T15:30:00`),
+        checkOutAt: null,
+        scheduledEnd: window.scheduledEnd,
+        checkoutWindowAfterMinutes: 180,
+        workDate,
+      },
+    ]);
+    assert.equal(decision.ok, false);
+    if (!decision.ok) {
+      assert.equal(decision.code, CURRENT_OPEN_CODE);
+      assert.match(decision.error, /open shift/i);
+    }
   });
 });

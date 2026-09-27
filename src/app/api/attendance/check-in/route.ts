@@ -8,8 +8,8 @@ import { getShiftTiming } from '@/lib/schedule-timing';
 import { fingerprintFromRequest, hashToken, verifyQrToken } from '@/lib/security';
 import { observePunchDevice, recordDeviceWarnings } from '@/lib/device-security';
 import { AttendanceMethod } from '@prisma/client';
-import { checkInBlockedBy, withShiftCheckoutWindow } from '@/lib/open-attendance';
-import { evaluateNormalQrCheckIn, exceptionForEmployee } from '@/lib/attendance-state';
+import { withShiftCheckoutWindow } from '@/lib/open-attendance';
+import { CURRENT_OPEN_CODE, evaluateLiveCheckIn, exceptionForEmployee } from '@/lib/attendance-state';
 import type { DayExceptionRecord } from '@/lib/day-status';
 
 type Body = {
@@ -102,16 +102,6 @@ export async function POST(req: NextRequest) {
     where: { employeeId: employee.id, checkInAt: { not: null }, checkOutAt: null },
     include: { shift: true },
   });
-  const blocking = checkInBlockedBy(
-    openRecords.map((row) => withShiftCheckoutWindow(row)),
-    new Date()
-  );
-  if (blocking) {
-    return NextResponse.json(
-      { error: 'You already have an open shift. End it first.' },
-      { status: 409 }
-    );
-  }
 
   // Check-in is allowed only for an admin-assigned schedule. QR does not pick a shift.
   const now = new Date();
@@ -138,7 +128,7 @@ export async function POST(req: NextRequest) {
     expectedWorkMinutes: row.expectedWorkMinutes,
   }));
   const exception = assignment ? exceptionForEmployee(assignment.workDate, employee.id, exceptions) : null;
-  const decision = evaluateNormalQrCheckIn({
+  const decision = evaluateLiveCheckIn({
     scheduleKind: lookup.kind,
     now,
     workDate: assignment?.workDate || lookup.workDate,
@@ -147,6 +137,7 @@ export async function POST(req: NextRequest) {
     crossesMidnight: assignment?.shift.crossesMidnight ?? true,
     checkinWindowBeforeMinutes: assignment?.shift.checkinWindowBeforeMinutes,
     exception,
+    openRecords: openRecords.map((row) => withShiftCheckoutWindow(row)),
   });
   if (!decision.ok) {
     return NextResponse.json(
@@ -156,7 +147,7 @@ export async function POST(req: NextRequest) {
         minutesUntilOpen: decision.minutesUntilOpen,
         opensAt: decision.opensAt,
       },
-      { status: 403 }
+      { status: decision.code === CURRENT_OPEN_CODE ? 409 : 403 }
     );
   }
   if (!assignment) {

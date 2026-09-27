@@ -3,12 +3,10 @@ import { getSession, writeAudit } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { calculateAttendance } from '@/lib/attendance-calc';
 import { getTonightAssignment } from '@/lib/schedule';
-import { checkInDeniedReason } from '@/lib/schedule-lookup';
-import { effectiveScheduledWindow, exceptionForEmployee, SHIFT_ENDED_CODE, SHIFT_ENDED_ERROR } from '@/lib/attendance-state';
+import { CURRENT_OPEN_CODE, evaluateLiveCheckIn, exceptionForEmployee } from '@/lib/attendance-state';
 import type { DayExceptionRecord } from '@/lib/day-status';
 import { AttendanceMethod } from '@prisma/client';
 import {
-  checkInBlockedBy,
   isStaleMissingCheckout,
   STALE_MISSING_CHECKOUT_CODE,
   STALE_MISSING_CHECKOUT_ERROR,
@@ -34,80 +32,72 @@ export async function POST(req: NextRequest) {
   }
 
   if (action === 'check-in') {
-    const assignmentId = String(body.assignmentId || '');
-    const lookup = await getTonightAssignment(employeeId, at);
-    const denied = checkInDeniedReason(lookup.kind);
-    if (!assignmentId && denied) {
-      return NextResponse.json({ error: denied.error, code: denied.code }, { status: 403 });
-    }
-
-    const assignment = assignmentId
+    const now = new Date();
+    const lookup = await getTonightAssignment(employeeId, now);
+    const assignment = lookup.assignment
       ? await prisma.employeeShiftAssignment.findUnique({
-          where: { id: assignmentId },
+          where: { id: lookup.assignment.id },
           include: { shift: true, project: true },
         })
-      : lookup.assignment
-        ? await prisma.employeeShiftAssignment.findUnique({
-            where: { id: lookup.assignment.id },
-            include: { shift: true, project: true },
-          })
-        : null;
-
-    if (!assignment || assignment.employeeId !== employeeId) {
-      return NextResponse.json({ error: 'No shift scheduled. Contact supervisor.' }, { status: 403 });
-    }
-    if (assignment.status === 'OFF') {
-      return NextResponse.json(
-        { error: 'Employee is scheduled OFF today. Regular check-in is not allowed.', code: 'OFF_DAY' },
-        { status: 403 }
-      );
-    }
+      : null;
 
     const openRecords = await prisma.attendanceRecord.findMany({
       where: { employeeId, checkOutAt: null, checkInAt: { not: null } },
       include: { shift: true },
     });
-    const blocking = checkInBlockedBy(
-      openRecords.map((row) => withShiftCheckoutWindow(row)),
-      at
-    );
-    if (blocking) {
-      return NextResponse.json({ error: 'Open shift already exists' }, { status: 409 });
-    }
-
-    const exceptionRows = await prisma.dayException.findMany({
-      where: {
-        workDate: assignment.workDate,
-        OR: [{ employeeId }, { employeeId: null, type: 'HOLIDAY' }],
-      },
-    });
-    const exception = exceptionForEmployee(
-      assignment.workDate,
-      employeeId,
-      exceptionRows.map((row) => ({
-        workDate: row.workDate,
-        employeeId: row.employeeId,
-        type: row.type as DayExceptionRecord['type'],
-        expectedStartTime: row.expectedStartTime,
-        expectedEndTime: row.expectedEndTime,
-        expectedWorkMinutes: row.expectedWorkMinutes,
-      }))
-    );
-    const { scheduledStart, scheduledEnd } = effectiveScheduledWindow({
-      workDate: assignment.workDate,
-      startTime: assignment.shift.startTime,
-      endTime: assignment.shift.endTime,
-      crossesMidnight: assignment.shift.crossesMidnight,
+    const exceptionRows = assignment
+      ? await prisma.dayException.findMany({
+          where: {
+            workDate: assignment.workDate,
+            OR: [{ employeeId }, { employeeId: null, type: 'HOLIDAY' }],
+          },
+        })
+      : [];
+    const exception = assignment
+      ? exceptionForEmployee(
+          assignment.workDate,
+          employeeId,
+          exceptionRows.map((row) => ({
+            workDate: row.workDate,
+            employeeId: row.employeeId,
+            type: row.type as DayExceptionRecord['type'],
+            expectedStartTime: row.expectedStartTime,
+            expectedEndTime: row.expectedEndTime,
+            expectedWorkMinutes: row.expectedWorkMinutes,
+          }))
+        )
+      : null;
+    const decision = evaluateLiveCheckIn({
+      scheduleKind: lookup.kind,
+      now,
+      workDate: assignment?.workDate || lookup.workDate,
+      startTime: assignment?.shift.startTime || '15:30',
+      endTime: assignment?.shift.endTime || '03:30',
+      crossesMidnight: assignment?.shift.crossesMidnight ?? true,
+      checkinWindowBeforeMinutes: assignment?.shift.checkinWindowBeforeMinutes,
       exception,
+      openRecords: openRecords.map((row) => withShiftCheckoutWindow(row)),
     });
-    if (at.getTime() > scheduledEnd.getTime()) {
-      return NextResponse.json({ error: SHIFT_ENDED_ERROR, code: SHIFT_ENDED_CODE }, { status: 403 });
+    if (!decision.ok) {
+      return NextResponse.json(
+        {
+          error: decision.error,
+          code: decision.code,
+          minutesUntilOpen: decision.minutesUntilOpen,
+          opensAt: decision.opensAt,
+        },
+        { status: decision.code === CURRENT_OPEN_CODE ? 409 : 403 }
+      );
     }
+    if (!assignment) {
+      return NextResponse.json({ error: 'No shift scheduled. Contact supervisor.', code: 'NO_SCHEDULE' }, { status: 403 });
+    }
+    const { scheduledStart, scheduledEnd } = decision;
 
     const calc = calculateAttendance({
       scheduledStart,
       scheduledEnd,
-      checkInAt: at,
+      checkInAt: now,
       checkOutAt: null,
       gracePeriodMinutes: assignment.shift.gracePeriodMinutes,
       manualCheckIn: true,
@@ -121,7 +111,7 @@ export async function POST(req: NextRequest) {
         assignmentId: assignment.id,
         scheduledStart,
         scheduledEnd,
-        checkInAt: at,
+        checkInAt: now,
         checkInMethod: AttendanceMethod.MANUAL,
         lateMinutes: calc.lateMinutes,
         flags: JSON.stringify(calc.flags),
@@ -135,7 +125,7 @@ export async function POST(req: NextRequest) {
         attendanceId: record.id,
         field: 'checkInAt',
         oldValue: null,
-        newValue: at.toISOString(),
+        newValue: now.toISOString(),
         reason,
         changedById: auth.sub,
       },
@@ -147,7 +137,7 @@ export async function POST(req: NextRequest) {
       entityType: 'AttendanceRecord',
       entityId: record.id,
       employeeId,
-      newValue: { at, reason },
+      newValue: { at: now, reason },
     });
 
     return NextResponse.json({ ok: true, record });
