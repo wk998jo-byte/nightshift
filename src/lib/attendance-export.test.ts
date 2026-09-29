@@ -28,8 +28,8 @@ const shift1 = {
 };
 const shift2 = {
   name: 'Night Shift 2',
-  startTime: '19:30',
-  endTime: '07:30',
+  startTime: '19:00',
+  endTime: '07:00',
   crossesMidnight: true,
   gracePeriodMinutes: 5,
 };

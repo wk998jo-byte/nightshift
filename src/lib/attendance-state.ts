@@ -69,6 +69,42 @@ export function effectiveScheduledWindow(input: {
   return scheduledWindow(input.workDate, input.startTime, input.endTime, input.crossesMidnight);
 }
 
+function asStoredWindow(stored?: {
+  scheduledStart?: Date | string | null;
+  scheduledEnd?: Date | string | null;
+} | null): { scheduledStart: Date; scheduledEnd: Date } | null {
+  if (!stored?.scheduledStart || !stored?.scheduledEnd) return null;
+  const scheduledStart =
+    stored.scheduledStart instanceof Date ? stored.scheduledStart : new Date(stored.scheduledStart);
+  const scheduledEnd =
+    stored.scheduledEnd instanceof Date ? stored.scheduledEnd : new Date(stored.scheduledEnd);
+  if (Number.isNaN(scheduledStart.getTime()) || Number.isNaN(scheduledEnd.getTime())) return null;
+  return { scheduledStart, scheduledEnd };
+}
+
+/** Punched rows keep AttendanceRecord.scheduledStart/End. Unpunched rows use current Shift config. */
+export function assignmentDisplayWindow(input: {
+  workDate: string;
+  startTime: string;
+  endTime: string;
+  crossesMidnight: boolean;
+  exception?: DayExceptionRecord | null;
+  stored?: {
+    scheduledStart?: Date | string | null;
+    scheduledEnd?: Date | string | null;
+  } | null;
+}): { scheduledStart: Date; scheduledEnd: Date } {
+  const stored = asStoredWindow(input.stored);
+  if (stored) return stored;
+  return effectiveScheduledWindow({
+    workDate: input.workDate,
+    startTime: input.startTime,
+    endTime: input.endTime,
+    crossesMidnight: input.crossesMidnight,
+    exception: input.exception,
+  });
+}
+
 export type CheckInWindowDecision =
   | { ok: true }
   | {

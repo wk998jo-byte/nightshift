@@ -5,11 +5,10 @@ import { classifyShift } from './shift-catalog';
 import { addCalendarDays, getAppTimezone } from './timezone';
 import {
   evaluateAssignmentDay,
-  halfDayWindow,
   type DayExceptionRecord,
 } from './day-status';
 import { isStaleMissingCheckout } from './open-attendance';
-import { resolveAttendanceDisplay } from './attendance-state';
+import { assignmentDisplayWindow, resolveAttendanceDisplay } from './attendance-state';
 
 export const MAX_EXPORT_DAYS = 366;
 export const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -59,6 +58,8 @@ export type ExportAssignment = {
   attendance: Array<{
     checkInAt: Date | string | null;
     checkOutAt: Date | string | null;
+    scheduledStart?: Date | string | null;
+    scheduledEnd?: Date | string | null;
     workedMinutes: number | null;
     lateMinutes: number;
     earlyLeaveMinutes: number;
@@ -205,17 +206,15 @@ export function buildExportRows(
       hasCheckIn: false,
       exceptions,
     });
-    if (preview.exception?.type === 'HALF_DAY') {
-      window = halfDayWindow(
-        a.workDate,
-        preview.exception,
-        a.shift.startTime,
-        a.shift.endTime,
-        a.shift.crossesMidnight
-      );
-    }
-
     const punch = a.attendance.find((r) => r.checkInAt) ?? null;
+    window = assignmentDisplayWindow({
+      workDate: a.workDate,
+      startTime: a.shift.startTime,
+      endTime: a.shift.endTime,
+      crossesMidnight: a.shift.crossesMidnight,
+      exception: preview.exception,
+      stored: punch,
+    });
     const checkInAt = asDate(punch?.checkInAt);
     const checkOutAt = asDate(punch?.checkOutAt);
     const day = evaluateAssignmentDay({

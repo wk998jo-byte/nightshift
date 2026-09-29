@@ -4,8 +4,11 @@ export type ShiftChoice = 'SHIFT_1' | 'SHIFT_2' | 'OFF';
 
 export const SHIFT_1_START = '15:30';
 export const SHIFT_1_END = '03:30';
-export const SHIFT_2_START = '19:30';
-export const SHIFT_2_END = '07:30';
+export const SHIFT_2_START = '19:00';
+export const SHIFT_2_END = '07:00';
+/** Previous official Shift 2 times. Keep classifying so existing DB rows still map to SHIFT_2. */
+export const LEGACY_SHIFT_2_START = '19:30';
+export const LEGACY_SHIFT_2_END = '07:30';
 
 export type ShiftCatalog = {
   shift1: Shift | null;
@@ -15,6 +18,7 @@ export type ShiftCatalog = {
 export function classifyShift(shift: Pick<Shift, 'startTime' | 'endTime'>): Exclude<ShiftChoice, 'OFF'> | null {
   if (shift.startTime === SHIFT_1_START && shift.endTime === SHIFT_1_END) return 'SHIFT_1';
   if (shift.startTime === SHIFT_2_START && shift.endTime === SHIFT_2_END) return 'SHIFT_2';
+  if (shift.startTime === LEGACY_SHIFT_2_START && shift.endTime === LEGACY_SHIFT_2_END) return 'SHIFT_2';
   return null;
 }
 

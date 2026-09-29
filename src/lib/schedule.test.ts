@@ -50,7 +50,7 @@ function makeAssignment(
 }
 
 const shift1 = makeShift({ id: 's1', name: 'Night Shift 1', startTime: '15:30', endTime: '03:30' });
-const shift2 = makeShift({ id: 's2', name: 'Night Shift 2', startTime: '19:30', endTime: '07:30' });
+const shift2 = makeShift({ id: 's2', name: 'Night Shift 2', startTime: '19:00', endTime: '07:00' });
 
 function createFakeDb(seed: {
   assignments?: Array<
@@ -135,12 +135,13 @@ function createFakeDb(seed: {
 }
 
 describe('shift catalog from real production times', () => {
-  it('classifies Shift 1 15:30 → 03:30 and Shift 2 19:30 → 07:30', () => {
+  it('classifies Shift 1 15:30 → 03:30 and Shift 2 19:00 → 07:00', () => {
     assert.equal(classifyShift(shift1), 'SHIFT_1');
     assert.equal(classifyShift(shift2), 'SHIFT_2');
     const catalog = catalogFromShifts([shift1, shift2]);
     assert.equal(catalog.shift1?.id, 's1');
     assert.equal(catalog.shift2?.id, 's2');
+    assert.equal(classifyShift({ startTime: '19:30', endTime: '07:30' }), 'SHIFT_2');
   });
 });
 
@@ -151,10 +152,10 @@ describe('schedule windows', () => {
     assert.equal(scheduledEnd.toISOString(), '2026-09-22T00:30:00.000Z');
   });
 
-  it('Shift 2 uses 19:30 → 07:30 and crosses midnight', () => {
-    const { scheduledStart, scheduledEnd } = scheduledWindow('2026-09-21', '19:30', '07:30', true);
-    assert.equal(scheduledStart.toISOString(), '2026-09-21T16:30:00.000Z');
-    assert.equal(scheduledEnd.toISOString(), '2026-09-22T04:30:00.000Z');
+  it('Shift 2 uses 19:00 → 07:00 and crosses midnight', () => {
+    const { scheduledStart, scheduledEnd } = scheduledWindow('2026-09-21', '19:00', '07:00', true);
+    assert.equal(scheduledStart.toISOString(), '2026-09-21T16:00:00.000Z');
+    assert.equal(scheduledEnd.toISOString(), '2026-09-22T04:00:00.000Z');
   });
 });
 
@@ -321,13 +322,13 @@ describe('check-in schedule rules', () => {
     assert.equal(window.scheduledEnd.toISOString(), '2026-09-22T00:30:00.000Z');
   });
 
-  it('picks Shift 2 after midnight using 19:30 → 07:30 window', () => {
+  it('picks Shift 2 after midnight using 19:00 → 07:00 window', () => {
     const asg = makeAssignment({ workDate: '2026-09-21', shift: shift2 });
     const picked = pickAssignmentForNow([asg], utc('2026-09-22T02:00:00.000Z'));
     assert.equal(picked?.shiftId, 's2');
     const window = scheduledWindow(picked!.workDate, picked!.shift.startTime, picked!.shift.endTime, true);
-    assert.equal(window.scheduledStart.toISOString(), '2026-09-21T16:30:00.000Z');
-    assert.equal(window.scheduledEnd.toISOString(), '2026-09-22T04:30:00.000Z');
+    assert.equal(window.scheduledStart.toISOString(), '2026-09-21T16:00:00.000Z');
+    assert.equal(window.scheduledEnd.toISOString(), '2026-09-22T04:00:00.000Z');
   });
 });
 

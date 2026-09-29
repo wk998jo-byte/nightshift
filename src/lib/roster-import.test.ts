@@ -42,8 +42,8 @@ const shift1 = {
 const shift2 = {
   id: 's2',
   name: 'Night Shift 2',
-  startTime: '19:30',
-  endTime: '07:30',
+  startTime: '19:00',
+  endTime: '07:00',
   crossesMidnight: true,
   gracePeriodMinutes: 5,
   isActive: true,
@@ -170,8 +170,8 @@ describe('official roster CSV', () => {
     const off = parsed.rows.find((r) => r.choice === 'OFF')!;
     assert.equal(s1.shiftStart, '15:30');
     assert.equal(s1.shiftEnd, '03:30');
-    assert.equal(s2.shiftStart, '19:30');
-    assert.equal(s2.shiftEnd, '07:30');
+    assert.equal(s2.shiftStart, '19:00');
+    assert.equal(s2.shiftEnd, '07:00');
     assert.equal(off.shiftStart, '—');
     assert.equal(off.shiftEnd, '—');
   });
@@ -426,7 +426,7 @@ describe('roster importer', () => {
   it('creates missing assignments and is idempotent on rerun', async () => {
     const csv = [
       'Work Date,Employee Code,Employee Name,Choice,Shift Start,Shift End,Project Code',
-      '2026-09-26,71326,Abdulaziz Abdullah H AlZahrani,SHIFT_2,19:30,07:30,HQ-01',
+      '2026-09-26,71326,Abdulaziz Abdullah H AlZahrani,SHIFT_2,19:00,07:00,HQ-01',
     ].join('\n');
     const rows = parseRosterCsv(csv).rows;
     const catalog = catalogFromShifts([shift1 as any, shift2 as any]);
@@ -528,7 +528,7 @@ describe('roster importer', () => {
     const csv = [
       'Work Date,Employee Code,Employee Name,Choice,Shift Start,Shift End,Project Code',
       '2026-09-26,71326,Abdulaziz Abdullah H AlZahrani,SHIFT_1,15:30,03:30,HQ-01',
-      '2026-09-26,71343,Abdullah Mahmoud B AlAnazi,SHIFT_2,19:30,07:30,HQ-01',
+      '2026-09-26,71343,Abdullah Mahmoud B AlAnazi,SHIFT_2,19:00,07:00,HQ-01',
       '2026-09-26,71378,Turki Daher M AlShammari,OFF,—,—,HQ-01',
     ].join('\n');
     const parsed = parseRosterCsv(csv);

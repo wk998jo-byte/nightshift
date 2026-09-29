@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { DateTime } from 'luxon';
-import { calculateAttendance, scheduledWindow } from './attendance-calc';
+import { calculateAttendance, formatTime, scheduledWindow } from './attendance-calc';
 import {
   CHECKIN_TOO_EARLY_CODE,
   CURRENT_OPEN_CODE,
   EXCUSED_DAY_CODE,
   SHIFT_ENDED_CODE,
+  assignmentDisplayWindow,
   effectiveScheduledWindow,
   employeeCheckInTimingView,
   evaluateLiveCheckIn,
@@ -156,6 +157,200 @@ describe('Shift 1 check-in window and shift end', () => {
       assert.equal(decision.code, SHIFT_ENDED_CODE);
       assert.equal(decision.error, 'This shift has already ended.');
     }
+  });
+});
+
+describe('Shift 2 check-in window and shift end', () => {
+  const s2 = scheduledWindow(workDate, '19:00', '07:00', true);
+  function qr2(now: Date) {
+    return evaluateNormalQrCheckIn({
+      scheduleKind: 'SCHEDULED',
+      now,
+      workDate,
+      startTime: '19:00',
+      endTime: '07:00',
+      crossesMidnight: true,
+      checkinWindowBeforeMinutes: 30,
+    });
+  }
+
+  it('Shift 2 18:29 => CHECKIN_TOO_EARLY', () => {
+    const decision = qr2(riyadh(`${workDate}T18:29:00`));
+    assert.equal(decision.ok, false);
+    if (!decision.ok) assert.equal(decision.code, CHECKIN_TOO_EARLY_CODE);
+  });
+
+  it('18:30 => allowed', () => {
+    assert.equal(qr2(riyadh(`${workDate}T18:30:00`)).ok, true);
+  });
+
+  it('19:00 => on time', () => {
+    const calc = calculateAttendance({
+      ...s2,
+      checkInAt: riyadh(`${workDate}T19:00:00`),
+      checkOutAt: null,
+      gracePeriodMinutes: 5,
+    });
+    assert.equal(calc.lateMinutes, 0);
+    assert.equal(calc.flags.includes('ON_TIME') || calc.statusPrimary === 'WORKING', true);
+  });
+
+  it('19:05 => on time', () => {
+    const calc = calculateAttendance({
+      ...s2,
+      checkInAt: riyadh(`${workDate}T19:05:00`),
+      checkOutAt: null,
+      gracePeriodMinutes: 5,
+    });
+    assert.equal(calc.lateMinutes, 0);
+  });
+
+  it('19:06 => late 6', () => {
+    const calc = calculateAttendance({
+      ...s2,
+      checkInAt: riyadh(`${workDate}T19:06:00`),
+      checkOutAt: null,
+      gracePeriodMinutes: 5,
+    });
+    assert.equal(calc.lateMinutes, 6);
+    assert.equal(calc.statusPrimary, 'LATE');
+  });
+
+  it('07:00 => shift end', () => {
+    assert.equal(s2.scheduledEnd.toISOString(), riyadh('2026-09-27T07:00:00').toISOString());
+    assert.equal(qr2(riyadh('2026-09-27T07:00:00')).ok, true);
+  });
+
+  it('after 07:00 without prior IN => SHIFT_ENDED', () => {
+    const decision = qr2(riyadh('2026-09-27T07:01:00'));
+    assert.equal(decision.ok, false);
+    if (!decision.ok) assert.equal(decision.code, SHIFT_ENDED_CODE);
+  });
+
+  it('existing IN remains current open through 10:00', () => {
+    const punch = {
+      checkInAt: riyadh(`${workDate}T19:00:00`),
+      checkOutAt: null as Date | null,
+      scheduledEnd: s2.scheduledEnd,
+      checkoutWindowAfterMinutes: 180,
+    };
+    assert.equal(classifyOpenAttendance(punch, riyadh('2026-09-27T09:59:00')), 'CURRENT_OPEN');
+    assert.equal(classifyOpenAttendance(punch, riyadh('2026-09-27T10:00:00')), 'CURRENT_OPEN');
+  });
+
+  it('after 10:00 => MISSING_CHECKOUT', () => {
+    const punch = {
+      checkInAt: riyadh(`${workDate}T19:00:00`),
+      checkOutAt: null as Date | null,
+      scheduledEnd: s2.scheduledEnd,
+      checkoutWindowAfterMinutes: 180,
+    };
+    assert.equal(classifyOpenAttendance(punch, riyadh('2026-09-27T10:01:00')), 'STALE_MISSING_CHECKOUT');
+  });
+});
+
+describe('historical attendance keeps stored Shift 2 window', () => {
+  it('stored 19:30–07:30 is used instead of the new 19:00–07:00 configuration', () => {
+    const storedStart = riyadh(`${workDate}T19:30:00`);
+    const storedEnd = riyadh('2026-09-27T07:30:00');
+    const checkInAt = riyadh(`${workDate}T19:36:00`);
+    const storedCalc = calculateAttendance({
+      scheduledStart: storedStart,
+      scheduledEnd: storedEnd,
+      checkInAt,
+      checkOutAt: null,
+      gracePeriodMinutes: 5,
+    });
+    const newWindow = scheduledWindow(workDate, '19:00', '07:00', true);
+    const newCalc = calculateAttendance({
+      ...newWindow,
+      checkInAt,
+      checkOutAt: null,
+      gracePeriodMinutes: 5,
+    });
+    assert.equal(storedCalc.lateMinutes, 6);
+    assert.equal(newCalc.lateMinutes, 36);
+
+    const displayWindow = assignmentDisplayWindow({
+      workDate,
+      startTime: '19:00',
+      endTime: '07:00',
+      crossesMidnight: true,
+      stored: { scheduledStart: storedStart, scheduledEnd: storedEnd },
+    });
+    assert.equal(displayWindow.scheduledStart.toISOString(), storedStart.toISOString());
+    assert.equal(displayWindow.scheduledEnd.toISOString(), storedEnd.toISOString());
+    assert.notEqual(displayWindow.scheduledStart.toISOString(), newWindow.scheduledStart.toISOString());
+
+    const at1015 = riyadh('2026-09-27T10:15:00');
+    const punch = {
+      id: 'att-legacy-s2',
+      checkInAt,
+      checkOutAt: null as Date | null,
+      scheduledStart: storedStart,
+      scheduledEnd: storedEnd,
+      workedMinutes: null,
+      lateMinutes: storedCalc.lateMinutes,
+      overtimeMinutes: 0,
+      earlyLeaveMinutes: 0,
+      statusPrimary: 'LATE',
+      flags: '["PRESENT","LATE","WORKING"]',
+    };
+    const assignment: BoardAssignment = {
+      id: 'a-legacy-s2',
+      employeeId: 'e1',
+      workDate,
+      status: 'SCHEDULED',
+      employee,
+      project: { id: 'p1', name: 'Riyadh Night Site', locationLabel: 'Riyadh' },
+      shift: {
+        id: 's2',
+        name: 'Night Shift 2',
+        startTime: '19:00',
+        endTime: '07:00',
+        crossesMidnight: true,
+        gracePeriodMinutes: 5,
+        checkoutWindowAfterMinutes: 180,
+      },
+      attendance: [punch],
+    };
+    const board = buildTonightBoard({ workDate, now: at1015, assignments: [assignment] });
+    assert.equal(board.rows[0].scheduledStart, storedStart.toISOString());
+    assert.equal(board.rows[0].lateMinutes, 6);
+    assert.equal(board.rows[0].statusPrimary, 'LATE');
+    assert.notEqual(board.rows[0].statusPrimary, 'MISSING_CHECKOUT');
+    assert.equal(board.currentlyWorking.length, 1);
+
+    const exportAsg: ExportAssignment = {
+      employeeId: 'e1',
+      workDate,
+      status: 'SCHEDULED',
+      employee: {
+        fullName: employee.fullName,
+        employeeCode: employee.employeeCode,
+        badgeNumber: employee.badgeNumber,
+        isActive: true,
+        user: employee.user,
+      },
+      project: { name: 'Riyadh Night Site' },
+      shift: {
+        name: 'Night Shift 2',
+        startTime: '19:00',
+        endTime: '07:00',
+        crossesMidnight: true,
+        gracePeriodMinutes: 5,
+        checkoutWindowAfterMinutes: 180,
+      },
+      attendance: [punch],
+    };
+    const rows = buildExportRows([exportAsg], at1015);
+    assert.equal(rows[0].scheduledStart, formatTime(storedStart));
+    assert.equal(rows[0].scheduledEnd, formatTime(storedEnd));
+    assert.equal(rows[0].scheduledStart, '7:30 PM');
+    assert.equal(rows[0].scheduledEnd, '7:30 AM');
+    assert.notEqual(rows[0].scheduledStart, formatTime(newWindow.scheduledStart));
+    assert.equal(rows[0].late, '6');
+    assert.notEqual(rows[0].status, 'MISSING_CHECKOUT');
   });
 });
 

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { BrandButton, Surface } from '@/components/ui';
+import { SHIFT_1_END, SHIFT_1_START, SHIFT_2_END, SHIFT_2_START } from '@/lib/shift-catalog';
 
 type EmployeeRow = { id: string; fullName: string; employeeCode: string; badgeNumber?: string };
 type ExceptionRow = {
@@ -331,8 +332,8 @@ export default function DayExceptionsTab({
               onChange={(e) => setCorrChoice(e.target.value)}
               className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
             >
-              <option value="SHIFT_1">Shift 1 · 15:30 → 03:30</option>
-              <option value="SHIFT_2">Shift 2 · 19:30 → 07:30</option>
+              <option value="SHIFT_1">Shift 1 · {SHIFT_1_START} → {SHIFT_1_END}</option>
+              <option value="SHIFT_2">Shift 2 · {SHIFT_2_START} → {SHIFT_2_END}</option>
             </select>
           </label>
           <label className="text-sm font-medium text-slate-600">

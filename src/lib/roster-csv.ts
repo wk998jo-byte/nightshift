@@ -1,4 +1,10 @@
 import {
+  SHIFT_1_END,
+  SHIFT_1_START,
+  SHIFT_2_END,
+  SHIFT_2_START,
+} from './shift-catalog';
+import {
   OFFICIAL_CHOICE_TOTALS,
   OFFICIAL_EMPLOYEE_CODES,
   OFFICIAL_PROJECT_CODE,
@@ -119,11 +125,11 @@ export function validateOfficialRoster(rows: RosterCsvRow[]): string[] {
   }
   for (const row of rows) {
     totals[row.employeeCode][row.choice] += 1;
-    if (row.choice === 'SHIFT_1' && (row.shiftStart !== '15:30' || row.shiftEnd !== '03:30')) {
-      errors.push(`SHIFT_1 times must be 15:30→03:30 on ${row.workDate} ${row.employeeCode}`);
+    if (row.choice === 'SHIFT_1' && (row.shiftStart !== SHIFT_1_START || row.shiftEnd !== SHIFT_1_END)) {
+      errors.push(`SHIFT_1 times must be ${SHIFT_1_START}→${SHIFT_1_END} on ${row.workDate} ${row.employeeCode}`);
     }
-    if (row.choice === 'SHIFT_2' && (row.shiftStart !== '19:30' || row.shiftEnd !== '07:30')) {
-      errors.push(`SHIFT_2 times must be 19:30→07:30 on ${row.workDate} ${row.employeeCode}`);
+    if (row.choice === 'SHIFT_2' && (row.shiftStart !== SHIFT_2_START || row.shiftEnd !== SHIFT_2_END)) {
+      errors.push(`SHIFT_2 times must be ${SHIFT_2_START}→${SHIFT_2_END} on ${row.workDate} ${row.employeeCode}`);
     }
     if (row.choice === 'OFF' && row.shiftStart !== '—' && row.shiftStart !== '') {
       errors.push(`OFF must not carry shift times on ${row.workDate} ${row.employeeCode}`);

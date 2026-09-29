@@ -1,13 +1,12 @@
 import { isShiftScheduleEmployee, classifyShift } from './shift-catalog';
 import {
   evaluateAssignmentDay,
-  halfDayWindow,
   type DayExceptionRecord,
 } from './day-status';
 import { addCalendarDays, calendarDateInAppZone } from './timezone';
 import { scheduledWindow } from './attendance-calc';
 import { checkoutDeadline, isCurrentOpenAttendance, isStaleMissingCheckout } from './open-attendance';
-import { resolveAttendanceDisplay } from './attendance-state';
+import { assignmentDisplayWindow, resolveAttendanceDisplay } from './attendance-state';
 
 export type BoardPerson = {
   id: string;
@@ -40,6 +39,8 @@ export type BoardAssignment = {
     id: string;
     checkInAt: Date | null;
     checkOutAt: Date | null;
+    scheduledStart?: Date | null;
+    scheduledEnd?: Date | null;
     workedMinutes: number | null;
     lateMinutes: number;
     overtimeMinutes: number;
@@ -225,7 +226,8 @@ export function buildTonightBoard(input: {
   const exceptions = input.exceptions || [];
 
   for (const a of scheduled) {
-    let window = scheduledWindow(
+    const punch = a.attendance.find((r) => r.checkInAt) ?? null;
+    const configWindow = scheduledWindow(
       a.workDate,
       a.shift.startTime,
       a.shift.endTime,
@@ -236,22 +238,20 @@ export function buildTonightBoard(input: {
       workDate: a.workDate,
       employeeId: a.employeeId,
       now: input.now,
-      scheduledStart: window.scheduledStart,
-      scheduledEnd: window.scheduledEnd,
+      scheduledStart: configWindow.scheduledStart,
+      scheduledEnd: configWindow.scheduledEnd,
       gracePeriodMinutes: a.shift.gracePeriodMinutes,
       hasCheckIn: false,
       exceptions,
     });
-    if (preview.exception?.type === 'HALF_DAY') {
-      window = halfDayWindow(
-        a.workDate,
-        preview.exception,
-        a.shift.startTime,
-        a.shift.endTime,
-        a.shift.crossesMidnight
-      );
-    }
-    const punch = a.attendance.find((r) => r.checkInAt) ?? null;
+    const window = assignmentDisplayWindow({
+      workDate: a.workDate,
+      startTime: a.shift.startTime,
+      endTime: a.shift.endTime,
+      crossesMidnight: a.shift.crossesMidnight,
+      exception: preview.exception,
+      stored: punch,
+    });
     const shiftKey = shiftKeyOf(a.shift);
     const shiftLabel = shiftDisplayLabel(a.shift);
     const day = evaluateAssignmentDay({

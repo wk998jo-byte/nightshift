@@ -40,8 +40,8 @@ function validEnv(overrides: Record<string, string> = {}): Record<string, string
     PROD_SHIFT_1_END_TIME: '03:30',
     PROD_SHIFT_1_GRACE_MINUTES: '5',
     PROD_SHIFT_2_NAME: 'Night Shift 2',
-    PROD_SHIFT_2_START_TIME: '19:30',
-    PROD_SHIFT_2_END_TIME: '07:30',
+    PROD_SHIFT_2_START_TIME: '19:00',
+    PROD_SHIFT_2_END_TIME: '07:00',
     PROD_SHIFT_2_GRACE_MINUTES: '5',
     PROD_TERMINAL_NAME: 'Gate Tablet',
     PROD_TERMINAL_SLUG: 'riyadh-gate',
@@ -84,9 +84,9 @@ describe('production bootstrap guards and validation', () => {
     assert.equal(parseHHMM('15:30', 'PROD_SHIFT_1_START_TIME'), '15:30');
     assert.equal(parseHHMM('03:30', 'PROD_SHIFT_1_END_TIME'), '03:30');
     assert.equal(computeCrossesMidnight('15:30', '03:30'), true);
-    assert.equal(parseHHMM('19:30', 'PROD_SHIFT_2_START_TIME'), '19:30');
-    assert.equal(parseHHMM('07:30', 'PROD_SHIFT_2_END_TIME'), '07:30');
-    assert.equal(computeCrossesMidnight('19:30', '07:30'), true);
+    assert.equal(parseHHMM('19:00', 'PROD_SHIFT_2_START_TIME'), '19:00');
+    assert.equal(parseHHMM('07:00', 'PROD_SHIFT_2_END_TIME'), '07:00');
+    assert.equal(computeCrossesMidnight('19:00', '07:00'), true);
     assert.equal(computeCrossesMidnight('08:00', '17:00'), false);
   });
 
@@ -125,8 +125,8 @@ describe('production bootstrap guards and validation', () => {
     assert.equal(input.shifts[0].endTime, '03:30');
     assert.equal(input.shifts[0].crossesMidnight, true);
     assert.equal(input.shifts[1].name, 'Night Shift 2');
-    assert.equal(input.shifts[1].startTime, '19:30');
-    assert.equal(input.shifts[1].endTime, '07:30');
+    assert.equal(input.shifts[1].startTime, '19:00');
+    assert.equal(input.shifts[1].endTime, '07:00');
     assert.equal(input.shifts[1].crossesMidnight, true);
     assert.ok('adminPassword' in input);
     assert.notEqual(input.adminPassword, 'admin123');

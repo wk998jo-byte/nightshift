@@ -32,15 +32,15 @@ const shift1 = {
 const shift2 = {
   id: 's2',
   name: 'Night Shift 2',
-  startTime: '19:30',
-  endTime: '07:30',
+  startTime: '19:00',
+  endTime: '07:00',
   crossesMidnight: true,
   gracePeriodMinutes: 5,
 };
 
 const productionBoardShifts = [
   { startTime: '15:30', endTime: '03:30', crossesMidnight: true, checkoutWindowAfterMinutes: 180 },
-  { startTime: '19:30', endTime: '07:30', crossesMidnight: true, checkoutWindowAfterMinutes: 180 },
+  { startTime: '19:00', endTime: '07:00', crossesMidnight: true, checkoutWindowAfterMinutes: 180 },
 ];
 
 function person(
@@ -206,7 +206,7 @@ describe('tonight dashboard counts', () => {
   });
 
   it('uses a single night workDate, not yesterday+today', () => {
-    const evening = new Date('2026-09-21T16:30:00.000Z'); // 19:30 Riyadh
+    const evening = new Date('2026-09-21T16:00:00.000Z'); // 19:00 Riyadh
     assert.equal(boardWorkDate(evening, null, productionBoardShifts), '2026-09-21');
     const afterMidnight = new Date('2026-09-21T22:00:00.000Z'); // 01:00 Riyadh Sep 22
     assert.equal(boardWorkDate(afterMidnight, null, productionBoardShifts), '2026-09-21');
@@ -215,15 +215,15 @@ describe('tonight dashboard counts', () => {
   it('board date follows the latest checkout deadline, not 08:00', () => {
     const at0759 = new Date('2026-09-22T04:59:00.000Z');
     const at0830 = new Date('2026-09-22T05:30:00.000Z');
-    const at1029 = new Date('2026-09-22T07:29:00.000Z');
-    const at1031 = new Date('2026-09-22T07:31:00.000Z');
+    const at0959 = new Date('2026-09-22T06:59:00.000Z');
+    const at1001 = new Date('2026-09-22T07:01:00.000Z');
     assert.equal(boardWorkDate(at0759, null, productionBoardShifts), '2026-09-21');
     assert.equal(boardWorkDate(at0830, null, productionBoardShifts), '2026-09-21');
-    assert.equal(boardWorkDate(at1029, null, productionBoardShifts), '2026-09-21');
-    assert.equal(boardWorkDate(at1031, null, productionBoardShifts), '2026-09-22');
+    assert.equal(boardWorkDate(at0959, null, productionBoardShifts), '2026-09-21');
+    assert.equal(boardWorkDate(at1001, null, productionBoardShifts), '2026-09-22');
     const deadline = latestNightCheckoutDeadline('2026-09-21', productionBoardShifts);
     assert.ok(deadline);
-    assert.equal(deadline.toISOString(), '2026-09-22T07:30:00.000Z');
+    assert.equal(deadline.toISOString(), '2026-09-22T07:00:00.000Z');
     const shift2Open = buildTonightBoard({
       workDate: boardWorkDate(at0830, null, productionBoardShifts),
       now: at0830,
