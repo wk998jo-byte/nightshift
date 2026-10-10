@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client';
 import { DateTime } from 'luxon';
 import { formatDuration, formatTime, scheduledWindow } from './attendance-calc';
 import { isDemoEmployeeCode, isDemoEmployeeName } from './demo-employee';
@@ -25,10 +26,21 @@ export const EXPORT_COLUMNS = [
   'Check-out',
   'Worked',
   'Late (min)',
-  'Early Leave (min)',
+  'Short (min)',
   'OT (min)',
   'Status',
   'Flags',
+] as const;
+
+export const EXPORT_SUMMARY_COLUMNS = [
+  'Employee',
+  'BN',
+  'Total Worked',
+  'Total Late Minutes',
+  'Total Short Minutes',
+  'Total OT Minutes',
+  'Late Days',
+  'Missing Checkout',
 ] as const;
 
 export type ExportRange =
@@ -71,6 +83,7 @@ export type ExportAssignment = {
 
 export type ExportRow = {
   workDate: string;
+  employeeId: string;
   employee: string;
   bn: string;
   shift: string;
@@ -85,6 +98,34 @@ export type ExportRow = {
   ot: string;
   status: string;
   flags: string;
+  workedMinutes: number | null;
+  lateMinutes: number | null;
+  earlyLeaveMinutes: number | null;
+  overtimeMinutes: number | null;
+  missingCheckout: boolean;
+};
+
+export type ExportSummaryRow = {
+  employeeId: string;
+  employee: string;
+  bn: string;
+  totalWorkedMinutes: number;
+  totalLateMinutes: number;
+  totalShortMinutes: number;
+  totalOtMinutes: number;
+  lateDays: number;
+  missingCheckout: number;
+  totalWorked: string;
+  totalOt: string;
+};
+
+export type ExportEmployeeOption = {
+  id: string;
+  fullName: string;
+  employeeCode: string;
+  badgeNumber?: string | null;
+  isActive?: boolean;
+  user?: { role: string; isActive: boolean } | null;
 };
 
 export function canExportAttendance(role: string | null | undefined): boolean {
@@ -127,9 +168,60 @@ export function enumerateWorkDates(from: string, to: string): string[] {
   return dates;
 }
 
-export function exportFilename(from: string, to: string): string {
-  if (from === to) return `attendance-${from}.csv`;
-  return `attendance-${from}-to-${to}.csv`;
+export function sanitizeExportFilenamePart(value: string | null | undefined): string {
+  const cleaned = String(value || '')
+    .trim()
+    .replace(/[^A-Za-z0-9_-]/g, '')
+    .slice(0, 40);
+  return cleaned || 'employee';
+}
+
+export function exportFilename(
+  from: string,
+  to: string,
+  options?: { employeeCode?: string | null }
+): string {
+  const range = `${from}-to-${to}`;
+  if (options?.employeeCode) {
+    return `attendance-${sanitizeExportFilenamePart(options.employeeCode)}-${range}.csv`;
+  }
+  return `attendance-all-${range}.csv`;
+}
+
+export function exportAssignmentWhere(input: {
+  from: string;
+  to: string;
+  projectId?: string | null;
+  employeeId?: string | null;
+}): Prisma.EmployeeShiftAssignmentWhereInput {
+  return {
+    status: { in: ['SCHEDULED', 'OFF'] },
+    workDate: { gte: input.from, lte: input.to },
+    ...(input.projectId ? { projectId: input.projectId } : {}),
+    ...(input.employeeId ? { employeeId: input.employeeId } : {}),
+  };
+}
+
+export function resolveExportEmployee(
+  employee: ExportEmployeeOption | null | undefined
+): { ok: true; employee: ExportEmployeeOption } | { ok: false; error: string } {
+  if (!employee?.id) return { ok: false, error: 'Invalid employee' };
+  if (!includeExportEmployee(employee)) return { ok: false, error: 'Invalid employee' };
+  return { ok: true, employee };
+}
+
+export function listExportableEmployees<T extends ExportEmployeeOption>(employees: T[]): T[] {
+  return employees
+    .filter((row) => includeExportEmployee(row))
+    .sort((a, b) => a.fullName.localeCompare(b.fullName) || a.employeeCode.localeCompare(b.employeeCode));
+}
+
+export function exportEmployeeLabel(employee: {
+  fullName: string;
+  badgeNumber?: string | null;
+  employeeCode: string;
+}): string {
+  return `${employee.fullName} — ${employee.badgeNumber || employee.employeeCode}`;
 }
 
 export function csvEscape(value: unknown): string {
@@ -154,8 +246,19 @@ function asDate(value: Date | string | null | undefined): Date | null {
   return value instanceof Date ? value : new Date(value);
 }
 
+function emptyMetrics() {
+  return {
+    workedMinutes: null as number | null,
+    lateMinutes: null as number | null,
+    earlyLeaveMinutes: null as number | null,
+    overtimeMinutes: null as number | null,
+    missingCheckout: false,
+  };
+}
+
 function excusedDashes(identity: {
   workDate: string;
+  employeeId: string;
   employee: string;
   bn: string;
   project: string;
@@ -169,21 +272,26 @@ function excusedDashes(identity: {
     late: '—',
     earlyLeave: '—',
     ot: '—',
+    ...emptyMetrics(),
   };
 }
 
 export function buildExportRows(
   assignments: ExportAssignment[],
   now = new Date(),
-  exceptions: DayExceptionRecord[] = []
+  exceptions: DayExceptionRecord[] = [],
+  options?: { employeeId?: string | null }
 ): ExportRow[] {
   const rows: ExportRow[] = [];
+  const onlyEmployeeId = options?.employeeId?.trim() || '';
   for (const a of assignments) {
     if (a.status !== 'SCHEDULED' && a.status !== 'OFF') continue;
     if (!includeExportEmployee(a.employee)) continue;
+    if (onlyEmployeeId && (a.employeeId || '') !== onlyEmployeeId) continue;
 
     const identity = {
       workDate: a.workDate,
+      employeeId: a.employeeId || '',
       employee: a.employee.fullName,
       bn: a.employee.badgeNumber || a.employee.employeeCode,
       project: a.project.name,
@@ -301,6 +409,11 @@ export function buildExportRows(
         ot: !checkOutAt || stale ? '—' : String(display.overtimeMinutes ?? 0),
         status: display.status,
         flags: display.flags.join('|'),
+        workedMinutes: display.workedMinutes,
+        lateMinutes: display.lateMinutes,
+        earlyLeaveMinutes: !checkOutAt || stale ? null : display.earlyLeaveMinutes,
+        overtimeMinutes: !checkOutAt || stale ? null : display.overtimeMinutes,
+        missingCheckout: stale || display.status === 'MISSING_CHECKOUT',
       });
       continue;
     }
@@ -315,6 +428,7 @@ export function buildExportRows(
       ot: '—',
       status: day.status,
       flags: day.status,
+      ...emptyMetrics(),
     });
   }
 
@@ -325,8 +439,47 @@ export function buildExportRows(
   });
 }
 
+export function summarizeExportRows(rows: ExportRow[]): ExportSummaryRow[] {
+  const groups = new Map<string, ExportSummaryRow>();
+  for (const row of rows) {
+    const key = row.employeeId || row.bn;
+    const current = groups.get(key) || {
+      employeeId: row.employeeId,
+      employee: row.employee,
+      bn: row.bn,
+      totalWorkedMinutes: 0,
+      totalLateMinutes: 0,
+      totalShortMinutes: 0,
+      totalOtMinutes: 0,
+      lateDays: 0,
+      missingCheckout: 0,
+      totalWorked: '',
+      totalOt: '',
+    };
+    if (row.workedMinutes != null) current.totalWorkedMinutes += row.workedMinutes;
+    if (row.lateMinutes != null) {
+      current.totalLateMinutes += row.lateMinutes;
+      if (row.lateMinutes > 0) current.lateDays += 1;
+    }
+    if (row.earlyLeaveMinutes != null) current.totalShortMinutes += row.earlyLeaveMinutes;
+    if (row.overtimeMinutes != null) current.totalOtMinutes += row.overtimeMinutes;
+    if (row.missingCheckout) current.missingCheckout += 1;
+    groups.set(key, current);
+  }
+
+  return [...groups.values()]
+    .map((row) => ({
+      ...row,
+      totalWorked: formatDuration(row.totalWorkedMinutes),
+      totalOt: formatDuration(row.totalOtMinutes),
+    }))
+    .sort((a, b) => a.employee.localeCompare(b.employee) || a.bn.localeCompare(b.bn));
+}
+
 export function rowsToCsv(rows: ExportRow[]): string {
+  const summaries = summarizeExportRows(rows);
   const lines = [
+    'Detailed Attendance',
     EXPORT_COLUMNS.join(','),
     ...rows.map((r) =>
       [
@@ -349,12 +502,36 @@ export function rowsToCsv(rows: ExportRow[]): string {
         .map(csvEscape)
         .join(',')
     ),
+    '',
+    'Summary',
+    EXPORT_SUMMARY_COLUMNS.join(','),
+    ...summaries.map((row) =>
+      [
+        row.employee,
+        row.bn,
+        row.totalWorked,
+        String(row.totalLateMinutes),
+        String(row.totalShortMinutes),
+        row.totalOt,
+        String(row.lateDays),
+        String(row.missingCheckout),
+      ]
+        .map(csvEscape)
+        .join(',')
+    ),
   ];
   return `\uFEFF${lines.join('\n')}`;
 }
 
-export function exportDownloadUrl(from: string, to: string): string {
-  return `/api/exports/attendance?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+export function exportDownloadUrl(
+  from: string,
+  to: string,
+  options?: { employeeId?: string | null; projectId?: string | null }
+): string {
+  const params = new URLSearchParams({ from, to });
+  if (options?.employeeId) params.set('employeeId', options.employeeId);
+  if (options?.projectId) params.set('projectId', options.projectId);
+  return `/api/exports/attendance?${params.toString()}`;
 }
 
 export function validateExportForm(from: string, to: string): string | null {

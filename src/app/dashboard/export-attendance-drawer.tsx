@@ -2,7 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import { BrandButton, Surface } from '@/components/ui';
-import { exportDownloadUrl, exportFilename, validateExportForm } from '@/lib/attendance-export';
+import {
+  exportDownloadUrl,
+  exportEmployeeLabel,
+  exportFilename,
+  validateExportForm,
+  type ExportEmployeeOption,
+} from '@/lib/attendance-export';
 
 export default function ExportAttendanceDrawer({
   open,
@@ -15,15 +21,31 @@ export default function ExportAttendanceDrawer({
 }) {
   const [from, setFrom] = useState(defaultDate);
   const [to, setTo] = useState(defaultDate);
+  const [employeeId, setEmployeeId] = useState('');
+  const [employees, setEmployees] = useState<ExportEmployeeOption[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [loadingEmployees, setLoadingEmployees] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     const seed = defaultDate || '';
     setFrom(seed);
     setTo(seed);
+    setEmployeeId('');
     setError('');
+    setLoadingEmployees(true);
+    fetch('/api/employees?scope=export', { credentials: 'include', cache: 'no-store' })
+      .then(async (res) => {
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json.error || 'Could not load employees');
+        setEmployees(json.employees || []);
+      })
+      .catch(() => {
+        setEmployees([]);
+        setError('Could not load employees');
+      })
+      .finally(() => setLoadingEmployees(false));
   }, [open, defaultDate]);
 
   async function download() {
@@ -35,7 +57,8 @@ export default function ExportAttendanceDrawer({
     }
     setBusy(true);
     try {
-      const res = await fetch(exportDownloadUrl(from, to), {
+      const selected = employees.find((row) => row.id === employeeId) || null;
+      const res = await fetch(exportDownloadUrl(from, to, { employeeId: employeeId || undefined }), {
         credentials: 'include',
         cache: 'no-store',
       });
@@ -48,7 +71,9 @@ export default function ExportAttendanceDrawer({
       const href = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = href;
-      a.download = exportFilename(from, to);
+      a.download = exportFilename(from, to, {
+        employeeCode: selected ? selected.badgeNumber || selected.employeeCode : undefined,
+      });
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -70,8 +95,8 @@ export default function ExportAttendanceDrawer({
         <div className="mb-4 flex items-start justify-between gap-3">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.2em] text-[#C8102E]">Attendance</p>
-            <h3 className="text-lg font-bold text-slate-900">Export Attendance</h3>
-            <p className="mt-1 text-sm text-slate-500">Choose a day or date range. Times are Asia/Riyadh.</p>
+            <h3 className="text-lg font-bold text-slate-900">Attendance Export</h3>
+            <p className="mt-1 text-sm text-slate-500">Exports detailed attendance and period totals.</p>
           </div>
           <BrandButton variant="ghost" className="!px-3 !py-2" onClick={onClose}>
             Close
@@ -96,6 +121,23 @@ export default function ExportAttendanceDrawer({
               className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
             />
           </label>
+          <label className="block text-sm font-medium text-slate-600">
+            Employee
+            <select
+              value={employeeId}
+              onChange={(e) => setEmployeeId(e.target.value)}
+              disabled={loadingEmployees}
+              className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm"
+            >
+              <option value="">All Employees</option>
+              {employees.map((row) => (
+                <option key={row.id} value={row.id}>
+                  {exportEmployeeLabel(row)}
+                </option>
+              ))}
+            </select>
+          </label>
+          {loadingEmployees ? <p className="text-sm text-slate-500">Loading employees…</p> : null}
           {error ? <p className="text-sm text-rose-600">{error}</p> : null}
           <BrandButton disabled={busy || !from || !to} className="w-full" onClick={() => void download()}>
             {busy ? 'Preparing…' : 'Download CSV'}

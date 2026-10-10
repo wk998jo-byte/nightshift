@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 import { prisma } from '@/lib/db';
+import { listExportableEmployees } from '@/lib/attendance-export';
 import { SHIFT_SCHEDULE_EMPLOYEE_WHERE } from '@/lib/shift-catalog';
 
 export async function GET(req: NextRequest) {
@@ -20,6 +21,17 @@ export async function GET(req: NextRequest) {
 
   if (!['ADMIN', 'HR', 'SUPERVISOR'].includes(auth.role)) {
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  if (req.nextUrl.searchParams.get('scope') === 'export') {
+    const employees = await prisma.employee.findMany({
+      orderBy: { fullName: 'asc' },
+      include: {
+        defaultProject: true,
+        user: { select: { role: true, username: true, isActive: true } },
+      },
+    });
+    return NextResponse.json({ employees: listExportableEmployees(employees) });
   }
 
   const activeOnly = req.nextUrl.searchParams.get('activeOnly') !== '0';

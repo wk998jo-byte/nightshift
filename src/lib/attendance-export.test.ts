@@ -7,11 +7,18 @@ import {
   countInclusiveDays,
   csvEscape,
   enumerateWorkDates,
+  exportAssignmentWhere,
+  exportDownloadUrl,
+  exportEmployeeLabel,
   exportFilename,
   exportShiftName,
   includeExportEmployee,
+  listExportableEmployees,
   parseExportRange,
+  resolveExportEmployee,
   rowsToCsv,
+  sanitizeExportFilenamePart,
+  summarizeExportRows,
   type ExportAssignment,
 } from './attendance-export';
 import type { DayExceptionRecord } from './day-status';
@@ -103,15 +110,24 @@ describe('export date range parsing', () => {
 });
 
 describe('export filename', () => {
-  it('filename correct for one day', () => {
-    assert.equal(exportFilename('2026-09-23', '2026-09-23'), 'attendance-2026-09-23.csv');
+  it('filename for All Employees uses attendance-all and the date range', () => {
+    assert.equal(
+      exportFilename('2026-10-01', '2026-10-31'),
+      'attendance-all-2026-10-01-to-2026-10-31.csv'
+    );
+    assert.equal(
+      exportFilename('2026-09-23', '2026-09-23'),
+      'attendance-all-2026-09-23-to-2026-09-23.csv'
+    );
   });
 
-  it('filename correct for range', () => {
+  it('filename for one employee uses BN, not the full name', () => {
     assert.equal(
-      exportFilename('2026-09-01', '2026-09-30'),
-      'attendance-2026-09-01-to-2026-09-30.csv'
+      exportFilename('2026-10-01', '2026-10-31', { employeeCode: '71326' }),
+      'attendance-71326-2026-10-01-to-2026-10-31.csv'
     );
+    assert.equal(sanitizeExportFilenamePart('Abdulaziz Abdullah H AlZahrani'), 'AbdulazizAbdullahHAlZahrani');
+    assert.equal(sanitizeExportFilenamePart('71326'), '71326');
   });
 });
 
@@ -337,6 +353,8 @@ describe('CSV quality', () => {
     const csv = rowsToCsv(rows);
     assert.equal(csv.startsWith('\uFEFF'), true);
     assert.match(csv, /Work Date,Employee,BN,Shift,Project,Scheduled Start,Scheduled End/);
+    assert.match(csv, /Short \(min\)/);
+    assert.equal(csv.includes('Early Leave (min)'), false);
     assert.match(csv, /2026-09-21/);
     assert.match(csv, /Shift 1/);
     assert.match(csv, /3:30 PM/);
@@ -430,6 +448,9 @@ describe('export administrative statuses', () => {
     assert.notEqual(rows[0].checkOut, '—');
     assert.equal(rows[0].worked, '12h 00m');
     assert.equal(rows[0].ot, '720');
+    const holidaySummary = summarizeExportRows(rows);
+    assert.equal(holidaySummary[0].totalOt, '12h 00m');
+    assert.equal(holidaySummary[0].totalOtMinutes, 720);
   });
 
   it('completed 12-hour ON_TIME row still exports OT minutes', () => {
@@ -534,5 +555,331 @@ describe('export administrative statuses', () => {
       [{ workDate: '2026-09-21', employeeId: 'e1', type: 'ABSENT' }]
     );
     assert.equal(rows[0].status, 'ABSENT');
+  });
+
+  it('Half Day with a completed punch keeps stored metrics and does not recalculate', () => {
+    const rows = buildExportRows(
+      [
+        asg({
+          employeeId: 'e1',
+          workDate: '2026-09-21',
+          employee: person('Turki Daher M AlShammari', '71378'),
+          shift: shift1,
+          attendance: [
+            {
+              checkInAt: new Date('2026-09-21T12:30:00.000Z'),
+              checkOutAt: new Date('2026-09-21T16:30:00.000Z'),
+              scheduledStart: new Date('2026-09-21T12:30:00.000Z'),
+              scheduledEnd: new Date('2026-09-21T16:30:00.000Z'),
+              workedMinutes: 240,
+              lateMinutes: 0,
+              earlyLeaveMinutes: 0,
+              overtimeMinutes: 0,
+              statusPrimary: 'ON_TIME',
+              flags: '["PRESENT","ON_TIME","HALF_DAY"]',
+            },
+          ],
+        }),
+      ],
+      afterWindow,
+      [
+        {
+          workDate: '2026-09-21',
+          employeeId: 'e1',
+          type: 'HALF_DAY',
+          expectedStartTime: '15:30',
+          expectedEndTime: '19:30',
+          expectedWorkMinutes: 240,
+        },
+      ]
+    );
+    assert.equal(rows[0].worked, '4h 00m');
+    assert.equal(rows[0].ot, '0');
+    assert.equal(rows[0].earlyLeave, '0');
+    assert.match(rows[0].flags, /HALF_DAY/);
+  });
+});
+
+describe('export employee filter and summaries', () => {
+  const afterWindow = new Date('2026-10-09T12:00:00.000Z');
+
+  function completed(
+    employeeId: string,
+    name: string,
+    code: string,
+    workDate: string,
+    metrics: {
+      workedMinutes: number;
+      lateMinutes: number;
+      earlyLeaveMinutes: number;
+      overtimeMinutes: number;
+      statusPrimary?: string;
+      flags?: string;
+      checkInAt?: Date;
+      checkOutAt?: Date;
+      scheduledStart?: Date;
+      scheduledEnd?: Date;
+    }
+  ): ExportAssignment {
+    return asg({
+      employeeId,
+      workDate,
+      employee: person(name, code),
+      shift: shift1,
+      attendance: [
+        {
+          checkInAt: metrics.checkInAt || new Date('2026-10-08T12:30:00.000Z'),
+          checkOutAt: metrics.checkOutAt || new Date('2026-10-09T00:30:00.000Z'),
+          scheduledStart: metrics.scheduledStart,
+          scheduledEnd: metrics.scheduledEnd,
+          workedMinutes: metrics.workedMinutes,
+          lateMinutes: metrics.lateMinutes,
+          earlyLeaveMinutes: metrics.earlyLeaveMinutes,
+          overtimeMinutes: metrics.overtimeMinutes,
+          statusPrimary: metrics.statusPrimary || 'ON_TIME',
+          flags: metrics.flags || '["PRESENT","ON_TIME"]',
+        },
+      ],
+    });
+  }
+
+  const abdulaziz = completed('e-az', 'Abdulaziz Abdullah H AlZahrani', '71326', '2026-10-08', {
+    workedMinutes: 720,
+    lateMinutes: 0,
+    earlyLeaveMinutes: 0,
+    overtimeMinutes: 240,
+    statusPrimary: 'ON_TIME',
+    flags: '["PRESENT","ON_TIME","OVERTIME"]',
+  });
+  const abdullah = completed('e-an', 'Abdullah Mahmoud B AlAnazi', '71343', '2026-10-08', {
+    workedMinutes: 540,
+    lateMinutes: 20,
+    earlyLeaveMinutes: 0,
+    overtimeMinutes: 60,
+    statusPrimary: 'LATE',
+    flags: '["PRESENT","LATE","OVERTIME"]',
+    checkInAt: new Date('2026-10-08T12:50:00.000Z'),
+    checkOutAt: new Date('2026-10-08T21:50:00.000Z'),
+  });
+  const turkiOff = asg({
+    employeeId: 'e-tu',
+    workDate: '2026-10-08',
+    status: 'OFF',
+    employee: person('Turki Daher M AlShammari', '71378'),
+    shift: shift1,
+  });
+
+  it('All Employees export includes multiple employees', () => {
+    const rows = buildExportRows([abdulaziz, abdullah, turkiOff], afterWindow);
+    assert.deepEqual(rows.map((r) => r.bn).sort(), ['71326', '71343', '71378']);
+  });
+
+  it('one employee filter returns only that employee in detail and summary', () => {
+    const rows = buildExportRows([abdulaziz, abdullah, turkiOff], afterWindow, [], {
+      employeeId: 'e-az',
+    });
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].bn, '71326');
+    const summary = summarizeExportRows(rows);
+    assert.equal(summary.length, 1);
+    assert.equal(summary[0].bn, '71326');
+  });
+
+  it('invalid employeeId is rejected', () => {
+    assert.equal(resolveExportEmployee(null).ok, false);
+    assert.equal(resolveExportEmployee(undefined).ok, false);
+    assert.equal(
+      resolveExportEmployee({
+        id: 'demo',
+        fullName: 'Demo Employee',
+        employeeCode: 'EMP-0147',
+        user: { role: 'EMPLOYEE', isActive: true },
+      }).ok,
+      false
+    );
+    const ok = resolveExportEmployee({
+      id: 'e-az',
+      fullName: 'Abdulaziz Abdullah H AlZahrani',
+      employeeCode: '71326',
+      badgeNumber: '71326',
+      user: { role: 'EMPLOYEE', isActive: true },
+    });
+    assert.equal(ok.ok, true);
+  });
+
+  it('cross-midnight checkout stays on the night workDate', () => {
+    const rows = buildExportRows(
+      [
+        completed('e-az', 'Abdulaziz Abdullah H AlZahrani', '71326', '2026-10-08', {
+          workedMinutes: 720,
+          lateMinutes: 0,
+          earlyLeaveMinutes: 0,
+          overtimeMinutes: 240,
+          checkInAt: new Date('2026-10-08T16:00:00.000Z'),
+          checkOutAt: new Date('2026-10-09T04:00:20.000Z'),
+        }),
+      ],
+      afterWindow
+    );
+    assert.equal(rows[0].workDate, '2026-10-08');
+    assert.equal(rows[0].worked, '12h 00m');
+  });
+
+  it('historical stored Shift 2 19:30-07:30 window is exported as stored', () => {
+    const storedStart = new Date('2026-09-26T16:30:00.000Z');
+    const storedEnd = new Date('2026-09-27T04:30:00.000Z');
+    const rows = buildExportRows(
+      [
+        asg({
+          employeeId: 'e-az',
+          workDate: '2026-09-26',
+          employee: person('Abdulaziz Abdullah H AlZahrani', '71326'),
+          shift: shift2,
+          attendance: [
+            {
+              checkInAt: storedStart,
+              checkOutAt: storedEnd,
+              scheduledStart: storedStart,
+              scheduledEnd: storedEnd,
+              workedMinutes: 720,
+              lateMinutes: 0,
+              earlyLeaveMinutes: 0,
+              overtimeMinutes: 240,
+              statusPrimary: 'ON_TIME',
+              flags: '["PRESENT","ON_TIME","OVERTIME"]',
+            },
+          ],
+        }),
+      ],
+      new Date('2026-09-27T12:00:00.000Z')
+    );
+    assert.equal(rows[0].scheduledStart, '7:30 PM');
+    assert.equal(rows[0].scheduledEnd, '7:30 AM');
+    assert.notEqual(rows[0].scheduledStart, '7:00 PM');
+  });
+
+  it('Late + OT exports both metrics and keeps ON_TIME + OT as ON_TIME', () => {
+    const rows = buildExportRows([abdulaziz, abdullah], afterWindow);
+    const lateOt = rows.find((r) => r.bn === '71343')!;
+    const onTimeOt = rows.find((r) => r.bn === '71326')!;
+    assert.equal(lateOt.status, 'LATE');
+    assert.equal(lateOt.late, '20');
+    assert.equal(lateOt.ot, '60');
+    assert.equal(onTimeOt.status, 'ON_TIME');
+    assert.equal(onTimeOt.ot, '240');
+    assert.match(onTimeOt.flags, /OVERTIME/);
+  });
+
+  it('missing checkout increments summary and OFF does not', () => {
+    const missing = asg({
+      employeeId: 'e-az',
+      workDate: '2026-10-07',
+      employee: person('Abdulaziz Abdullah H AlZahrani', '71326'),
+      shift: { ...shift1, checkoutWindowAfterMinutes: 180 },
+      attendance: [
+        {
+          checkInAt: new Date('2026-10-07T12:30:00.000Z'),
+          checkOutAt: null,
+          workedMinutes: null,
+          lateMinutes: 6,
+          earlyLeaveMinutes: 0,
+          overtimeMinutes: 0,
+          statusPrimary: 'WORKING',
+          flags: '["PRESENT","LATE","WORKING"]',
+        },
+      ],
+    });
+    const rows = buildExportRows([missing, turkiOff, abdulaziz], afterWindow);
+    const az = rows.filter((r) => r.bn === '71326');
+    const tu = rows.filter((r) => r.bn === '71378');
+    assert.equal(az.some((r) => r.status === 'MISSING_CHECKOUT'), true);
+    assert.equal(tu[0].status, 'OFF');
+    const summary = summarizeExportRows(rows);
+    const azSum = summary.find((r) => r.bn === '71326')!;
+    const tuSum = summary.find((r) => r.bn === '71378')!;
+    assert.equal(azSum.missingCheckout, 1);
+    assert.equal(tuSum.missingCheckout, 0);
+    assert.equal(azSum.lateDays, 1);
+    assert.equal(azSum.totalWorked, '12h 00m');
+    assert.equal(azSum.totalOt, '4h 00m');
+    assert.equal(azSum.totalLateMinutes, 6);
+  });
+
+  it('summary totals and Late Days sum correctly for All Employees and one employee', () => {
+    const secondAz = completed('e-az', 'Abdulaziz Abdullah H AlZahrani', '71326', '2026-10-09', {
+      workedMinutes: 420,
+      lateMinutes: 16,
+      earlyLeaveMinutes: 60,
+      overtimeMinutes: 0,
+      statusPrimary: 'LATE',
+      flags: '["PRESENT","LATE","EARLY_DEPARTURE"]',
+      checkInAt: new Date('2026-10-09T12:46:00.000Z'),
+      checkOutAt: new Date('2026-10-09T19:46:00.000Z'),
+    });
+    const allRows = buildExportRows([abdulaziz, secondAz, abdullah, turkiOff], afterWindow);
+    const allSummary = summarizeExportRows(allRows);
+    assert.equal(allSummary.length, 3);
+    const az = allSummary.find((r) => r.bn === '71326')!;
+    assert.equal(az.totalWorked, '19h 00m');
+    assert.equal(az.totalLateMinutes, 16);
+    assert.equal(az.totalShortMinutes, 60);
+    assert.equal(az.totalOt, '4h 00m');
+    assert.equal(az.lateDays, 1);
+    assert.equal(az.missingCheckout, 0);
+    const one = summarizeExportRows(
+      buildExportRows([abdulaziz, secondAz, abdullah], afterWindow, [], { employeeId: 'e-az' })
+    );
+    assert.equal(one.length, 1);
+    assert.equal(one[0].bn, '71326');
+    const csv = rowsToCsv(allRows);
+    assert.match(csv, /Detailed Attendance/);
+    assert.match(csv, /\n\nSummary\n/);
+    assert.match(csv, /Total Worked,Total Late Minutes,Total Short Minutes,Total OT Minutes/);
+    assert.match(csv, /19h 00m/);
+  });
+
+  it('does not leak demo employees into rows, summary, or the selector', () => {
+    const demo = asg({
+      employeeId: 'e-demo',
+      workDate: '2026-10-08',
+      employee: person('Demo Employee', 'EMP-0147'),
+      shift: shift1,
+    });
+    const rows = buildExportRows([demo, abdulaziz], afterWindow);
+    assert.deepEqual(rows.map((r) => r.bn), ['71326']);
+    assert.deepEqual(summarizeExportRows(rows).map((r) => r.bn), ['71326']);
+    assert.deepEqual(
+      listExportableEmployees([
+        { id: 'e-demo', fullName: 'Demo Employee', employeeCode: 'EMP-0147', user: { role: 'EMPLOYEE', isActive: true } },
+        { id: 'e-admin', fullName: 'Admin User', employeeCode: 'ADMIN', user: { role: 'ADMIN', isActive: true } },
+        { id: 'e-az', fullName: 'Abdulaziz Abdullah H AlZahrani', employeeCode: '71326', badgeNumber: '71326', isActive: false, user: { role: 'EMPLOYEE', isActive: false } },
+      ]).map((r) => r.employeeCode),
+      ['71326']
+    );
+    assert.equal(
+      exportEmployeeLabel({ fullName: 'Abdulaziz Abdullah H AlZahrani', employeeCode: '71326', badgeNumber: '71326' }),
+      'Abdulaziz Abdullah H AlZahrani — 71326'
+    );
+  });
+
+  it('keeps existing projectId filter support and UTF-8 BOM', () => {
+    const where = exportAssignmentWhere({
+      from: '2026-10-01',
+      to: '2026-10-31',
+      projectId: 'proj-1',
+      employeeId: 'e-az',
+    });
+    assert.equal(where.projectId, 'proj-1');
+    assert.equal(where.employeeId, 'e-az');
+    assert.deepEqual(where.workDate, { gte: '2026-10-01', lte: '2026-10-31' });
+    const allWhere = exportAssignmentWhere({ from: '2026-10-01', to: '2026-10-31' });
+    assert.equal('projectId' in allWhere, false);
+    assert.equal('employeeId' in allWhere, false);
+    const csv = rowsToCsv(buildExportRows([abdulaziz], afterWindow));
+    assert.equal(csv.startsWith('\uFEFF'), true);
+    assert.equal(
+      exportDownloadUrl('2026-10-01', '2026-10-31', { employeeId: 'e-az', projectId: 'proj-1' }),
+      '/api/exports/attendance?from=2026-10-01&to=2026-10-31&employeeId=e-az&projectId=proj-1'
+    );
   });
 });
