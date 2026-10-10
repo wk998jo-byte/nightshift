@@ -309,6 +309,17 @@ describe('tonight dashboard counts', () => {
       earlyLeaveMinutes: 0,
       flags: ['PRESENT', 'ON_TIME'],
     };
+    const onTimeOt = {
+      employeeName: 'E',
+      employeeCode: '71326-ot',
+      statusPrimary: 'ON_TIME',
+      checkInAt: 'in',
+      checkOutAt: 'out',
+      lateMinutes: 0,
+      overtimeMinutes: 240,
+      earlyLeaveMinutes: 0,
+      flags: ['PRESENT', 'ON_TIME', 'OVERTIME'],
+    };
     const missing = {
       employeeName: 'D',
       employeeCode: '71300',
@@ -320,13 +331,17 @@ describe('tonight dashboard counts', () => {
       earlyLeaveMinutes: 0,
       flags: ['MISSING_CHECKOUT'],
     };
-    const rows = [lateOt, lateEarly, onTime, missing];
+    const rows = [lateOt, lateEarly, onTime, onTimeOt, missing];
     assert.equal(filterBoardRows(rows, { status: 'LATE' }).map((r) => r.employeeCode).join(','), '71326,71343,71300');
-    assert.equal(filterBoardRows(rows, { status: 'OVERTIME' }).map((r) => r.employeeCode).join(','), '71326');
+    assert.equal(
+      filterBoardRows(rows, { status: 'OVERTIME' }).map((r) => r.employeeCode).join(','),
+      '71326,71326-ot'
+    );
     assert.equal(filterBoardRows(rows, { status: 'EARLY_DEPARTURE' }).map((r) => r.employeeCode).join(','), '71343');
-    assert.equal(filterBoardRows(rows, { status: 'ON_TIME' }).map((r) => r.employeeCode).join(','), '71378');
+    assert.equal(filterBoardRows(rows, { status: 'ON_TIME' }).map((r) => r.employeeCode).join(','), '71378,71326-ot');
     assert.equal(filterBoardRows(rows, { status: 'MISSING_CHECKOUT' }).map((r) => r.employeeCode).join(','), '71300');
     assert.equal(filterBoardRows([onTime], { status: 'OVERTIME' }).length, 0);
+    assert.equal(filterBoardRows([onTimeOt], { status: 'OVERTIME' }).length, 1);
     assert.equal(filterBoardRows([onTime], { status: 'EARLY_DEPARTURE' }).length, 0);
   });
 

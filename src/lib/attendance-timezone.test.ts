@@ -60,7 +60,7 @@ describe('Saudi night shift timezone (server TZ = UTC)', () => {
     assert.equal(result.statusPrimary, 'LATE');
   });
 
-  it('calculates early departure before 06:00 Riyadh', () => {
+  it('calculates short time against 8 required hours, not scheduled end', () => {
     const { scheduledStart, scheduledEnd } = scheduledWindow(
       '2026-09-21',
       '18:00',
@@ -71,14 +71,16 @@ describe('Saudi night shift timezone (server TZ = UTC)', () => {
       scheduledStart,
       scheduledEnd,
       checkInAt: utc('2026-09-21T15:00:00.000Z'),
-      checkOutAt: utc('2026-09-22T02:00:00.000Z'),
+      checkOutAt: utc('2026-09-21T22:00:00.000Z'),
       gracePeriodMinutes: 5,
     });
+    assert.equal(result.workedMinutes, 420);
     assert.equal(result.earlyLeaveMinutes, 60);
+    assert.equal(result.overtimeMinutes, 0);
     assert.equal(result.statusPrimary, 'EARLY_DEPARTURE');
   });
 
-  it('calculates overtime after 06:00 Riyadh', () => {
+  it('calculates overtime from worked duration, not scheduled end', () => {
     const { scheduledStart, scheduledEnd } = scheduledWindow(
       '2026-09-21',
       '18:00',
@@ -92,9 +94,10 @@ describe('Saudi night shift timezone (server TZ = UTC)', () => {
       checkOutAt: utc('2026-09-22T04:30:00.000Z'),
       gracePeriodMinutes: 5,
     });
-    assert.equal(result.overtimeMinutes, 90);
+    assert.equal(result.overtimeMinutes, 330);
     assert.equal(result.workedMinutes, 810);
-    assert.equal(result.statusPrimary, 'OVERTIME');
+    assert.equal(result.statusPrimary, 'ON_TIME');
+    assert.equal(result.flags.includes('OVERTIME'), true);
   });
 });
 

@@ -434,12 +434,15 @@ describe('half day calculations', () => {
       exception,
     });
     assert.equal(effective.scheduledEnd.toISOString(), half.scheduledEnd.toISOString());
+    const required = half.expectedWorkMinutes || 240;
     const late = calculateAttendance({
       scheduledStart: half.scheduledStart,
       scheduledEnd: half.scheduledEnd,
       checkInAt: riyadh(`${workDate}T15:40:00`),
       checkOutAt: riyadh(`${workDate}T19:30:00`),
       gracePeriodMinutes: 5,
+      requiredWorkMinutes: required,
+      halfDay: true,
     });
     assert.equal(late.lateMinutes, 10);
     const early = calculateAttendance({
@@ -448,6 +451,8 @@ describe('half day calculations', () => {
       checkInAt: riyadh(`${workDate}T15:30:00`),
       checkOutAt: riyadh(`${workDate}T19:00:00`),
       gracePeriodMinutes: 5,
+      requiredWorkMinutes: required,
+      halfDay: true,
     });
     assert.equal(early.earlyLeaveMinutes, 30);
     const ot = calculateAttendance({
@@ -456,6 +461,8 @@ describe('half day calculations', () => {
       checkInAt: riyadh(`${workDate}T15:30:00`),
       checkOutAt: riyadh(`${workDate}T20:00:00`),
       gracePeriodMinutes: 5,
+      requiredWorkMinutes: required,
+      halfDay: true,
     });
     assert.equal(ot.overtimeMinutes, 30);
     const ended = qr(riyadh(`${workDate}T19:31:00`), exception);

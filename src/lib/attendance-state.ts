@@ -257,8 +257,8 @@ export type DisplayPunch = {
   checkOutAt: Date | null;
   workedMinutes: number | null;
   lateMinutes: number;
-  overtimeMinutes: number;
-  earlyLeaveMinutes: number;
+  overtimeMinutes: number | null;
+  earlyLeaveMinutes: number | null;
   statusPrimary: string;
   flags?: string | string[] | null;
 };
@@ -308,9 +308,9 @@ export function resolveAttendanceDisplay(input: {
     return {
       status: late > 0 ? 'LATE' : 'WORKING',
       flags: flagsForOpenPunch(parseStoredFlags(punch?.flags)),
-      workedMinutes: punch?.workedMinutes ?? null,
-      overtimeMinutes: punch?.overtimeMinutes ?? 0,
-      earlyLeaveMinutes: punch?.earlyLeaveMinutes ?? 0,
+      workedMinutes: null,
+      overtimeMinutes: null,
+      earlyLeaveMinutes: null,
       lateMinutes: late,
     };
   }

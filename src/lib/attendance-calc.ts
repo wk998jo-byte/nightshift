@@ -19,7 +19,64 @@ export type AttendanceFlags =
   | 'MANUAL_CHECKOUT'
   | 'ON_LEAVE'
   | 'OFF_DAY'
-  | 'WORKING';
+  | 'WORKING'
+  | 'HOLIDAY_WORK'
+  | 'HALF_DAY';
+
+export const DEFAULT_REQUIRED_WORK_MINUTES = 480;
+
+export function validRequiredWorkMinutes(
+  value: number | null | undefined,
+  fallback = DEFAULT_REQUIRED_WORK_MINUTES
+): number {
+  if (!Number.isFinite(value)) return fallback;
+  const minutes = Math.floor(Number(value));
+  if (minutes <= 0 || minutes > 24 * 60) return fallback;
+  return minutes;
+}
+
+/**
+ * Half Day required minutes, in order:
+ * 1. approved expectedWorkMinutes when it is a positive integer
+ * 2. duration of approved expectedStart/expectedEnd when those exist
+ * 3. duration of the effective scheduled window already applied to the punch
+ * Never force 480 for Half Day when an approved window can be measured.
+ * Normal days: Shift.minWorkMinutes, or 480 when null/invalid.
+ */
+export function requiredWorkMinutesForAttendance(input: {
+  shiftMinWorkMinutes?: number | null;
+  exceptionType?: string | null;
+  exceptionExpectedWorkMinutes?: number | null;
+  exceptionExpectedStartTime?: string | null;
+  exceptionExpectedEndTime?: string | null;
+  workDate?: string;
+  scheduledStart: Date;
+  scheduledEnd: Date;
+}): number {
+  if (input.exceptionType === 'HALF_DAY') {
+    if (
+      Number.isFinite(input.exceptionExpectedWorkMinutes) &&
+      Number(input.exceptionExpectedWorkMinutes) > 0
+    ) {
+      return Math.floor(Number(input.exceptionExpectedWorkMinutes));
+    }
+    if (input.workDate && input.exceptionExpectedStartTime && input.exceptionExpectedEndTime) {
+      const start = fromAppWallTime(input.workDate, input.exceptionExpectedStartTime);
+      const endDate =
+        input.exceptionExpectedEndTime < input.exceptionExpectedStartTime
+          ? addCalendarDays(input.workDate, 1)
+          : input.workDate;
+      const approvedWindowMinutes = diffMinutes(
+        fromAppWallTime(endDate, input.exceptionExpectedEndTime),
+        start
+      );
+      if (approvedWindowMinutes > 0) return approvedWindowMinutes;
+    }
+    const effectiveWindowMinutes = diffMinutes(input.scheduledEnd, input.scheduledStart);
+    if (effectiveWindowMinutes > 0) return effectiveWindowMinutes;
+  }
+  return validRequiredWorkMinutes(input.shiftMinWorkMinutes);
+}
 
 export function parseTimeOnDate(workDate: string, hhmm: string): Date {
   return fromAppWallTime(workDate, hhmm);
@@ -65,6 +122,9 @@ export type CalcInput = {
   checkInAt: Date | null;
   checkOutAt: Date | null;
   gracePeriodMinutes: number;
+  requiredWorkMinutes?: number | null;
+  holidayWork?: boolean;
+  halfDay?: boolean;
   manualCheckIn?: boolean;
   manualCheckOut?: boolean;
 };
@@ -72,8 +132,8 @@ export type CalcInput = {
 export type CalcResult = {
   workedMinutes: number | null;
   lateMinutes: number;
-  earlyLeaveMinutes: number;
-  overtimeMinutes: number;
+  earlyLeaveMinutes: number | null;
+  overtimeMinutes: number | null;
   flags: AttendanceFlags[];
   statusPrimary: string;
 };
@@ -90,8 +150,8 @@ export function calculateAttendance(input: CalcInput): CalcResult {
     return {
       workedMinutes: null,
       lateMinutes: 0,
-      earlyLeaveMinutes: 0,
-      overtimeMinutes: 0,
+      earlyLeaveMinutes: null,
+      overtimeMinutes: null,
       flags,
       statusPrimary: 'SCHEDULED',
     };
@@ -99,6 +159,8 @@ export function calculateAttendance(input: CalcInput): CalcResult {
 
   flags.push('PRESENT');
   if (input.manualCheckIn) flags.push('MANUAL_CHECKIN');
+  if (input.holidayWork) flags.push('HOLIDAY_WORK');
+  if (input.halfDay) flags.push('HALF_DAY');
 
   const rawLate = Math.max(0, diffMinutes(input.checkInAt, input.scheduledStart));
   lateMinutes = lateMinutesAfterGrace(rawLate, input.gracePeriodMinutes);
@@ -110,8 +172,8 @@ export function calculateAttendance(input: CalcInput): CalcResult {
     return {
       workedMinutes: null,
       lateMinutes,
-      earlyLeaveMinutes: 0,
-      overtimeMinutes: 0,
+      earlyLeaveMinutes: null,
+      overtimeMinutes: null,
       flags,
       statusPrimary: lateMinutes > 0 ? 'LATE' : 'WORKING',
     };
@@ -119,8 +181,13 @@ export function calculateAttendance(input: CalcInput): CalcResult {
 
   if (input.manualCheckOut) flags.push('MANUAL_CHECKOUT');
   workedMinutes = Math.max(0, diffMinutes(input.checkOutAt, input.checkInAt));
-  earlyLeaveMinutes = Math.max(0, diffMinutes(input.scheduledEnd, input.checkOutAt));
-  overtimeMinutes = Math.max(0, diffMinutes(input.checkOutAt, input.scheduledEnd));
+  const requiredWorkMinutes = validRequiredWorkMinutes(input.requiredWorkMinutes);
+  earlyLeaveMinutes = input.holidayWork
+    ? 0
+    : Math.max(0, requiredWorkMinutes - workedMinutes);
+  overtimeMinutes = input.holidayWork
+    ? workedMinutes
+    : Math.max(0, workedMinutes - requiredWorkMinutes);
 
   if (earlyLeaveMinutes > 0) flags.push('EARLY_DEPARTURE');
   if (overtimeMinutes > 0) flags.push('OVERTIME');
@@ -128,7 +195,6 @@ export function calculateAttendance(input: CalcInput): CalcResult {
   let statusPrimary = 'ON_TIME';
   if (lateMinutes > 0) statusPrimary = 'LATE';
   else if (earlyLeaveMinutes > 0) statusPrimary = 'EARLY_DEPARTURE';
-  else if (overtimeMinutes > 0) statusPrimary = 'OVERTIME';
   else statusPrimary = 'ON_TIME';
 
   return {

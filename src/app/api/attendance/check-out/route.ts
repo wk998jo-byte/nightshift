@@ -3,10 +3,12 @@ import { getSession, writeAudit } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { isInsideRadius } from '@/lib/geo';
 import { calculateAttendance } from '@/lib/attendance-calc';
+import { resolveAttendanceDayPolicy } from '@/lib/attendance-policy';
 import { fingerprintFromRequest, hashToken, verifyQrToken } from '@/lib/security';
 import { observePunchDevice, recordDeviceWarnings } from '@/lib/device-security';
 import { AttendanceMethod } from '@prisma/client';
 import { resolveCheckoutTarget, withShiftCheckoutWindow } from '@/lib/open-attendance';
+import { calendarDateInAppZone } from '@/lib/timezone';
 
 export async function POST(req: NextRequest) {
   const auth = await getSession();
@@ -43,7 +45,12 @@ export async function POST(req: NextRequest) {
       checkInAt: { not: null },
       checkOutAt: null,
     },
-    include: { shift: true, project: true, employee: { include: { user: { select: { role: true, isActive: true } } } } },
+    include: {
+      shift: true,
+      project: true,
+      assignment: { select: { workDate: true } },
+      employee: { include: { user: { select: { role: true, isActive: true } } } },
+    },
   });
   const target = resolveCheckoutTarget(
     openRecords.map((row) => withShiftCheckoutWindow(row)),
@@ -81,12 +88,30 @@ export async function POST(req: NextRequest) {
   }
 
   const now = new Date();
+  const workDate = open.assignment?.workDate || calendarDateInAppZone(open.scheduledStart);
+  const exceptionRows = await prisma.dayException.findMany({
+    where: {
+      workDate,
+      OR: [{ employeeId: auth.employeeId }, { employeeId: null, type: 'HOLIDAY' }],
+    },
+  });
+  const policy = resolveAttendanceDayPolicy({
+    workDate,
+    employeeId: auth.employeeId,
+    shiftMinWorkMinutes: open.shift.minWorkMinutes,
+    scheduledStart: open.scheduledStart,
+    scheduledEnd: open.scheduledEnd,
+    exceptions: exceptionRows,
+  });
   const calc = calculateAttendance({
     scheduledStart: open.scheduledStart,
     scheduledEnd: open.scheduledEnd,
     checkInAt: open.checkInAt,
     checkOutAt: now,
     gracePeriodMinutes: open.shift.gracePeriodMinutes,
+    requiredWorkMinutes: policy.requiredWorkMinutes,
+    holidayWork: policy.holidayWork,
+    halfDay: policy.halfDay,
     manualCheckIn: open.checkInMethod === 'MANUAL',
   });
 
@@ -114,8 +139,8 @@ export async function POST(req: NextRequest) {
       checkOutIp: ip,
       workedMinutes: calc.workedMinutes,
       lateMinutes: calc.lateMinutes,
-      earlyLeaveMinutes: calc.earlyLeaveMinutes,
-      overtimeMinutes: calc.overtimeMinutes,
+      earlyLeaveMinutes: calc.earlyLeaveMinutes ?? 0,
+      overtimeMinutes: calc.overtimeMinutes ?? 0,
       flags: JSON.stringify(calc.flags),
       statusPrimary: calc.statusPrimary,
     },

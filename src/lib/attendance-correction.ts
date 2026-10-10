@@ -1,5 +1,11 @@
 import { AttendanceMethod } from '@prisma/client';
 import { calculateAttendance, scheduledWindow } from './attendance-calc';
+import { resolveAttendanceDayPolicy } from './attendance-policy';
+import {
+  halfDayWindow,
+  resolveDayException,
+  type DayExceptionRecord,
+} from './day-status';
 import { shiftForChoice, type ShiftCatalog, type ShiftChoice } from './shift-catalog';
 import { fromAppWallTime } from './timezone';
 
@@ -97,16 +103,41 @@ export function planAttendanceCorrection(input: {
 }
 
 export function correctionCalc(input: {
+  employeeId?: string;
   workDate: string;
   startTime: string;
   endTime: string;
   crossesMidnight: boolean;
   gracePeriodMinutes: number;
+  minWorkMinutes?: number | null;
+  exceptions?: DayExceptionRecord[];
   checkInAt: Date;
   checkOutAt: Date | null;
   manualCheckIn?: boolean;
 }) {
-  const window = scheduledWindow(input.workDate, input.startTime, input.endTime, input.crossesMidnight);
+  const exception = resolveDayException(
+    input.workDate,
+    input.employeeId || '',
+    input.exceptions || []
+  );
+  const window =
+    exception?.type === 'HALF_DAY'
+      ? halfDayWindow(
+          input.workDate,
+          exception,
+          input.startTime,
+          input.endTime,
+          input.crossesMidnight
+        )
+      : scheduledWindow(input.workDate, input.startTime, input.endTime, input.crossesMidnight);
+  const policy = resolveAttendanceDayPolicy({
+    workDate: input.workDate,
+    employeeId: input.employeeId || '',
+    shiftMinWorkMinutes: input.minWorkMinutes,
+    scheduledStart: window.scheduledStart,
+    scheduledEnd: window.scheduledEnd,
+    exceptions: input.exceptions,
+  });
   return {
     window,
     calc: calculateAttendance({
@@ -115,6 +146,9 @@ export function correctionCalc(input: {
       checkInAt: input.checkInAt,
       checkOutAt: input.checkOutAt,
       gracePeriodMinutes: input.gracePeriodMinutes,
+      requiredWorkMinutes: policy.requiredWorkMinutes,
+      holidayWork: policy.holidayWork,
+      halfDay: policy.halfDay,
       manualCheckIn: input.manualCheckIn ?? true,
       manualCheckOut: !!input.checkOutAt,
     }),
@@ -137,6 +171,7 @@ export type CorrectionDb = {
     update?: (args?: any) => Promise<any>;
   };
   attendanceAdjustment: { create: (args?: any) => Promise<any> };
+  dayException?: { findMany: (args?: any) => Promise<any[]> };
 };
 
 export async function applyAttendanceCorrection(input: {
@@ -208,6 +243,15 @@ export async function applyAttendanceCorrection(input: {
   });
   if (!decision.ok) return decision;
 
+  const exceptionRows: DayExceptionRecord[] = input.db.dayException
+    ? await input.db.dayException.findMany({
+        where: {
+          workDate: input.workDate,
+          OR: [{ employeeId: input.employeeId }, { employeeId: null, type: 'HOLIDAY' }],
+        },
+      })
+    : [];
+
   if (decision.mode === 'missing_out') {
     if (!input.checkOutAt) {
       return { ok: false as const, error: 'Actual check-out is required', status: 400 };
@@ -231,12 +275,23 @@ export async function applyAttendanceCorrection(input: {
     const scheduledStart = existingAttendance.scheduledStart;
     const scheduledEnd = existingAttendance.scheduledEnd;
     const originalCheckIn = existingAttendance.checkInAt;
+    const policy = resolveAttendanceDayPolicy({
+      workDate: input.workDate,
+      employeeId: input.employeeId,
+      shiftMinWorkMinutes: shift?.minWorkMinutes,
+      scheduledStart,
+      scheduledEnd,
+      exceptions: exceptionRows,
+    });
     const calc = calculateAttendance({
       scheduledStart,
       scheduledEnd,
       checkInAt: originalCheckIn,
       checkOutAt: input.checkOutAt,
       gracePeriodMinutes: grace,
+      requiredWorkMinutes: policy.requiredWorkMinutes,
+      holidayWork: policy.holidayWork,
+      halfDay: policy.halfDay,
       manualCheckIn: existingAttendance.checkInMethod === AttendanceMethod.MANUAL,
       manualCheckOut: true,
     });
@@ -259,8 +314,8 @@ export async function applyAttendanceCorrection(input: {
         checkOutMethod: AttendanceMethod.MANUAL,
         workedMinutes: calc.workedMinutes,
         lateMinutes: calc.lateMinutes,
-        earlyLeaveMinutes: calc.earlyLeaveMinutes,
-        overtimeMinutes: calc.overtimeMinutes,
+        earlyLeaveMinutes: calc.earlyLeaveMinutes ?? 0,
+        overtimeMinutes: calc.overtimeMinutes ?? 0,
         flags: JSON.stringify(flags),
         statusPrimary: calc.statusPrimary,
         manualOverride: true,
@@ -342,11 +397,14 @@ export async function applyAttendanceCorrection(input: {
   }
 
   const built = correctionCalc({
+    employeeId: input.employeeId,
     workDate: input.workDate,
     startTime: shift.startTime,
     endTime: shift.endTime,
     crossesMidnight: shift.crossesMidnight,
     gracePeriodMinutes: shift.gracePeriodMinutes,
+    minWorkMinutes: shift.minWorkMinutes,
+    exceptions: exceptionRows,
     checkInAt: input.checkInAt,
     checkOutAt: input.checkOutAt,
   });
@@ -367,8 +425,8 @@ export async function applyAttendanceCorrection(input: {
       checkOutMethod: input.checkOutAt ? AttendanceMethod.MANUAL : null,
       workedMinutes: built.calc.workedMinutes,
       lateMinutes: built.calc.lateMinutes,
-      earlyLeaveMinutes: built.calc.earlyLeaveMinutes,
-      overtimeMinutes: built.calc.overtimeMinutes,
+      earlyLeaveMinutes: built.calc.earlyLeaveMinutes ?? 0,
+      overtimeMinutes: built.calc.overtimeMinutes ?? 0,
       flags: JSON.stringify(flags),
       statusPrimary: built.calc.statusPrimary,
       manualOverride: true,

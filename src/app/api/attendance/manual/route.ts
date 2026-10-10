@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSession, writeAudit } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { calculateAttendance } from '@/lib/attendance-calc';
+import { resolveAttendanceDayPolicy } from '@/lib/attendance-policy';
 import { getTonightAssignment } from '@/lib/schedule';
 import { CURRENT_OPEN_CODE, evaluateLiveCheckIn, exceptionForEmployee } from '@/lib/attendance-state';
 import type { DayExceptionRecord } from '@/lib/day-status';
@@ -12,6 +13,7 @@ import {
   STALE_MISSING_CHECKOUT_ERROR,
   withShiftCheckoutWindow,
 } from '@/lib/open-attendance';
+import { calendarDateInAppZone } from '@/lib/timezone';
 
 /** Supervisor/Admin manual check-in or check-out */
 export async function POST(req: NextRequest) {
@@ -148,11 +150,11 @@ export async function POST(req: NextRequest) {
     const open = attendanceId
       ? await prisma.attendanceRecord.findUnique({
           where: { id: attendanceId },
-          include: { shift: true },
+          include: { shift: true, assignment: { select: { workDate: true } } },
         })
       : await prisma.attendanceRecord.findFirst({
           where: { employeeId, checkInAt: { not: null }, checkOutAt: null },
-          include: { shift: true },
+          include: { shift: true, assignment: { select: { workDate: true } } },
         });
 
     if (!open || !open.checkInAt) {
@@ -169,12 +171,30 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const workDate = open.assignment?.workDate || calendarDateInAppZone(open.scheduledStart);
+    const exceptionRows = await prisma.dayException.findMany({
+      where: {
+        workDate,
+        OR: [{ employeeId }, { employeeId: null, type: 'HOLIDAY' }],
+      },
+    });
+    const policy = resolveAttendanceDayPolicy({
+      workDate,
+      employeeId,
+      shiftMinWorkMinutes: open.shift.minWorkMinutes,
+      scheduledStart: open.scheduledStart,
+      scheduledEnd: open.scheduledEnd,
+      exceptions: exceptionRows,
+    });
     const calc = calculateAttendance({
       scheduledStart: open.scheduledStart,
       scheduledEnd: open.scheduledEnd,
       checkInAt: open.checkInAt,
       checkOutAt: at,
       gracePeriodMinutes: open.shift.gracePeriodMinutes,
+      requiredWorkMinutes: policy.requiredWorkMinutes,
+      holidayWork: policy.holidayWork,
+      halfDay: policy.halfDay,
       manualCheckIn: open.checkInMethod === 'MANUAL',
       manualCheckOut: true,
     });
@@ -186,8 +206,8 @@ export async function POST(req: NextRequest) {
         checkOutMethod: AttendanceMethod.MANUAL,
         workedMinutes: calc.workedMinutes,
         lateMinutes: calc.lateMinutes,
-        earlyLeaveMinutes: calc.earlyLeaveMinutes,
-        overtimeMinutes: calc.overtimeMinutes,
+        earlyLeaveMinutes: calc.earlyLeaveMinutes ?? 0,
+        overtimeMinutes: calc.overtimeMinutes ?? 0,
         flags: JSON.stringify(calc.flags),
         statusPrimary: calc.statusPrimary,
         manualOverride: true,

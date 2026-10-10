@@ -432,6 +432,38 @@ describe('export administrative statuses', () => {
     assert.equal(rows[0].ot, '720');
   });
 
+  it('completed 12-hour ON_TIME row still exports OT minutes', () => {
+    const rows = buildExportRows(
+      [
+        asg({
+          employeeId: 'e1',
+          workDate: '2026-09-21',
+          employee: person('Abdulaziz Abdullah H AlZahrani', '71326'),
+          shift: shift1,
+          attendance: [
+            {
+              checkInAt: new Date('2026-09-21T12:30:00.000Z'),
+              checkOutAt: new Date('2026-09-22T00:30:00.000Z'),
+              workedMinutes: 720,
+              lateMinutes: 0,
+              earlyLeaveMinutes: 0,
+              overtimeMinutes: 240,
+              statusPrimary: 'ON_TIME',
+              flags: '["PRESENT","ON_TIME","OVERTIME"]',
+            },
+          ],
+        }),
+      ],
+      afterWindow
+    );
+    assert.equal(rows[0].status, 'ON_TIME');
+    assert.equal(rows[0].worked, '12h 00m');
+    assert.equal(rows[0].ot, '240');
+    assert.equal(rows[0].late, '0');
+    assert.equal(rows[0].earlyLeave, '0');
+    assert.match(rows[0].flags, /OVERTIME/);
+  });
+
   it('OFF remains OFF and date-range behavior stays intact', () => {
     const rows = buildExportRows(
       [
