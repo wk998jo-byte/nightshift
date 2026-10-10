@@ -19,6 +19,8 @@ import {
   rowsToCsv,
   sanitizeExportFilenamePart,
   summarizeExportRows,
+  EXPORT_COLUMNS,
+  EXPORT_SUMMARY_COLUMNS,
   type ExportAssignment,
 } from './attendance-export';
 import type { DayExceptionRecord } from './day-status';
@@ -834,7 +836,20 @@ describe('export employee filter and summaries', () => {
     const csv = rowsToCsv(allRows);
     assert.match(csv, /Detailed Attendance/);
     assert.match(csv, /\n\nSummary\n/);
-    assert.match(csv, /Total Worked,Total Late Minutes,Total Short Minutes,Total OT Minutes/);
+    assert.match(csv, /Total Worked,Total Late Minutes,Total Short Minutes,Total OT,/);
+    assert.match(csv, /OT \(min\)/);
+    assert.equal(csv.includes('Total OT Minutes'), false);
+    assert.deepEqual(EXPORT_SUMMARY_COLUMNS, [
+      'Employee',
+      'BN',
+      'Total Worked',
+      'Total Late Minutes',
+      'Total Short Minutes',
+      'Total OT',
+      'Late Days',
+      'Missing Checkout',
+    ]);
+    assert.equal(EXPORT_COLUMNS.includes('OT (min)'), true);
     assert.match(csv, /19h 00m/);
   });
 

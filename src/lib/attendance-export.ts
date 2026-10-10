@@ -38,7 +38,7 @@ export const EXPORT_SUMMARY_COLUMNS = [
   'Total Worked',
   'Total Late Minutes',
   'Total Short Minutes',
-  'Total OT Minutes',
+  'Total OT',
   'Late Days',
   'Missing Checkout',
 ] as const;

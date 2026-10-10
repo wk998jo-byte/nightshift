@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSession, writeAudit } from '@/lib/auth';
+import { getSession } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import { listExportableEmployees } from '@/lib/attendance-export';
 import {
@@ -82,7 +82,6 @@ export async function POST(req: NextRequest) {
     db: prisma,
     actorId: auth.sub,
     data: parsed.data,
-    writeAudit,
   });
   if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
   return NextResponse.json({ employee: result.employee }, { status: 201 });

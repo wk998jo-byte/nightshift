@@ -243,13 +243,16 @@ export type EmployeeManagementDb = {
     delete: (args: any) => Promise<any>;
     deleteMany?: (args: any) => Promise<any>;
   };
+  auditLog: {
+    create: (args: any) => Promise<any>;
+  };
   attendanceRecord?: {
     update?: (args: any) => Promise<any>;
     updateMany?: (args: any) => Promise<any>;
   };
 };
 
-export type AuditWriter = (row: {
+export type EmployeeAuditInput = {
   actorId?: string | null;
   action: string;
   entityType?: string;
@@ -257,7 +260,35 @@ export type AuditWriter = (row: {
   employeeId?: string;
   oldValue?: unknown;
   newValue?: unknown;
-}) => Promise<void>;
+};
+
+export function assertManagedEmployeeRole(user: { role?: string } | null | undefined): EmployeeWriteError | { ok: true } {
+  if (!user) return { ok: false, status: 409, error: 'Employee has no login account' };
+  if (user.role !== 'EMPLOYEE') {
+    return { ok: false, status: 403, error: 'This account cannot be managed from People' };
+  }
+  return { ok: true };
+}
+
+export async function writeEmployeeManagementAudit(
+  tx: { auditLog: { create: (args: any) => Promise<any> } },
+  input: EmployeeAuditInput
+) {
+  if (employeeJsonHasSecrets({ oldValue: input.oldValue, newValue: input.newValue })) {
+    throw new Error('Refusing to audit employee secrets');
+  }
+  await tx.auditLog.create({
+    data: {
+      actorId: input.actorId || null,
+      action: input.action,
+      entityType: input.entityType || 'Employee',
+      entityId: input.entityId,
+      employeeId: input.employeeId,
+      oldValue: input.oldValue != null ? JSON.stringify(input.oldValue) : null,
+      newValue: input.newValue != null ? JSON.stringify(input.newValue) : null,
+    },
+  });
+}
 
 async function loadSupervisor(
   db: EmployeeManagementDb,
@@ -323,7 +354,6 @@ export async function createManagedEmployee(input: {
   db: EmployeeManagementDb;
   actorId: string;
   data: EmployeeCreateInput;
-  writeAudit: AuditWriter;
   hashPassword?: (password: string) => Promise<string>;
 }): Promise<{ ok: true; employee: PublicEmployee } | EmployeeWriteError> {
   const project = await loadProject(input.db, input.data.defaultProjectId);
@@ -361,6 +391,19 @@ export async function createManagedEmployee(input: {
           isActive: input.data.isActive,
         },
       });
+      await writeEmployeeManagementAudit(tx, {
+        actorId: input.actorId,
+        action: 'EMPLOYEE_CREATED',
+        entityType: 'Employee',
+        entityId: employee.id,
+        employeeId: employee.id,
+        newValue: {
+          employeeId: employee.id,
+          employeeCode: employee.employeeCode,
+          employeeName: employee.fullName,
+          passwordSet: true,
+        },
+      });
       return { employee, user };
     });
 
@@ -370,20 +413,6 @@ export async function createManagedEmployee(input: {
       supervisor: supervisor.supervisor,
       user: created.user,
       hasPhoto: false,
-    });
-
-    await input.writeAudit({
-      actorId: input.actorId,
-      action: 'EMPLOYEE_CREATED',
-      entityType: 'Employee',
-      entityId: created.employee.id,
-      employeeId: created.employee.id,
-      newValue: {
-        employeeId: created.employee.id,
-        employeeCode: created.employee.employeeCode,
-        employeeName: created.employee.fullName,
-        passwordSet: true,
-      },
     });
 
     return { ok: true, employee: publicEmployee };
@@ -400,7 +429,6 @@ export async function updateManagedEmployee(input: {
   actorId: string;
   employeeId: string;
   data: EmployeeUpdateInput;
-  writeAudit: AuditWriter;
 }): Promise<{ ok: true; employee: PublicEmployee } | EmployeeWriteError> {
   const existing = await input.db.employee.findUnique({
     where: { id: input.employeeId },
@@ -411,7 +439,8 @@ export async function updateManagedEmployee(input: {
     },
   });
   if (!existing) return { ok: false, status: 404, error: 'Employee not found' };
-  if (!existing.user) return { ok: false, status: 409, error: 'Employee has no login account' };
+  const roleOk = assertManagedEmployeeRole(existing.user);
+  if (!roleOk.ok) return roleOk;
 
   const project = await loadProject(input.db, input.data.defaultProjectId ?? null);
   if (!project.ok) return project;
@@ -426,6 +455,16 @@ export async function updateManagedEmployee(input: {
 
   const previousHash = existing.user.passwordHash;
   const statusChanged = existing.isActive !== input.data.isActive;
+  const previous = {
+    employeeCode: existing.employeeCode,
+    employeeName: existing.fullName,
+    mobile: existing.mobile || null,
+    position: existing.position || null,
+    department: existing.department || null,
+    defaultProjectId: existing.defaultProjectId || null,
+    supervisorId: existing.supervisorId || null,
+    isActive: existing.isActive,
+  };
 
   try {
     const updated = await input.db.$transaction(async (tx) => {
@@ -453,6 +492,40 @@ export async function updateManagedEmployee(input: {
       if (user.passwordHash !== previousHash) {
         throw new Error('Employee update must not change the password');
       }
+      const changed: string[] = [];
+      if (previous.employeeName !== input.data.fullName) changed.push('fullName');
+      if (previous.employeeCode !== input.data.bn) changed.push('bn');
+      if (previous.mobile !== (input.data.mobile ?? null)) changed.push('mobile');
+      if (previous.position !== (input.data.position ?? null)) changed.push('position');
+      if (previous.department !== (input.data.department ?? null)) changed.push('department');
+      if (previous.defaultProjectId !== (input.data.defaultProjectId ?? null)) changed.push('defaultProjectId');
+      if (previous.supervisorId !== (input.data.supervisorId ?? null)) changed.push('supervisorId');
+      if (statusChanged) changed.push('isActive');
+      await writeEmployeeManagementAudit(tx, {
+        actorId: input.actorId,
+        action: statusChanged ? 'EMPLOYEE_STATUS_CHANGED' : 'EMPLOYEE_UPDATED',
+        entityType: 'Employee',
+        entityId: existing.id,
+        employeeId: existing.id,
+        oldValue: {
+          employeeCode: previous.employeeCode,
+          employeeName: previous.employeeName,
+          isActive: previous.isActive,
+          defaultProjectId: previous.defaultProjectId,
+          supervisorId: previous.supervisorId,
+        },
+        newValue: {
+          employeeCode: employee.employeeCode,
+          employeeName: employee.fullName,
+          isActive: employee.isActive,
+          defaultProjectId: employee.defaultProjectId,
+          supervisorId: employee.supervisorId,
+          changedFields: changed,
+          ...(previous.employeeCode !== input.data.bn
+            ? { oldBn: previous.employeeCode, newBn: input.data.bn }
+            : {}),
+        },
+      });
       return { employee, user };
     });
 
@@ -464,48 +537,6 @@ export async function updateManagedEmployee(input: {
       photo: existing.photo,
     });
 
-    const changed: Record<string, { from: unknown; to: unknown }> = {};
-    if (existing.fullName !== input.data.fullName) changed.fullName = { from: existing.fullName, to: input.data.fullName };
-    if (existing.employeeCode !== input.data.bn) changed.bn = { from: existing.employeeCode, to: input.data.bn };
-    if ((existing.mobile || null) !== input.data.mobile) changed.mobile = { from: existing.mobile, to: input.data.mobile };
-    if ((existing.position || null) !== input.data.position) changed.position = { from: existing.position, to: input.data.position };
-    if ((existing.department || null) !== input.data.department) {
-      changed.department = { from: existing.department, to: input.data.department };
-    }
-    if ((existing.defaultProjectId || null) !== input.data.defaultProjectId) {
-      changed.defaultProjectId = { from: existing.defaultProjectId, to: input.data.defaultProjectId };
-    }
-    if ((existing.supervisorId || null) !== input.data.supervisorId) {
-      changed.supervisorId = { from: existing.supervisorId, to: input.data.supervisorId };
-    }
-    if (statusChanged) changed.isActive = { from: existing.isActive, to: input.data.isActive };
-
-    await input.writeAudit({
-      actorId: input.actorId,
-      action: statusChanged ? 'EMPLOYEE_STATUS_CHANGED' : 'EMPLOYEE_UPDATED',
-      entityType: 'Employee',
-      entityId: existing.id,
-      employeeId: existing.id,
-      oldValue: {
-        employeeCode: existing.employeeCode,
-        employeeName: existing.fullName,
-        isActive: existing.isActive,
-        defaultProjectId: existing.defaultProjectId,
-        supervisorId: existing.supervisorId,
-      },
-      newValue: {
-        employeeCode: updated.employee.employeeCode,
-        employeeName: updated.employee.fullName,
-        isActive: updated.employee.isActive,
-        defaultProjectId: updated.employee.defaultProjectId,
-        supervisorId: updated.employee.supervisorId,
-        changedFields: Object.keys(changed),
-        ...(existing.employeeCode !== input.data.bn
-          ? { oldBn: existing.employeeCode, newBn: input.data.bn }
-          : {}),
-      },
-    });
-
     return { ok: true, employee: publicEmployee };
   } catch (error) {
     if (isUniqueConstraintError(error)) {
@@ -513,6 +544,81 @@ export async function updateManagedEmployee(input: {
     }
     throw error;
   }
+}
+
+export async function replaceManagedEmployeePhoto(input: {
+  db: EmployeeManagementDb;
+  actorId: string;
+  employeeId: string;
+  data: Uint8Array;
+  mimeType: string;
+}): Promise<{ ok: true; mimeType: string } | EmployeeWriteError> {
+  const employee = await input.db.employee.findUnique({
+    where: { id: input.employeeId },
+    include: { user: { select: { role: true } } },
+  });
+  if (!employee) return { ok: false, status: 404, error: 'Employee not found' };
+  const roleOk = assertManagedEmployeeRole(employee.user);
+  if (!roleOk.ok) return roleOk;
+  if (!input.db.employeePhoto) return { ok: false, status: 500, error: 'Photo storage is unavailable' };
+
+  await input.db.$transaction(async (tx) => {
+    await tx.employeePhoto.upsert({
+      where: { employeeId: input.employeeId },
+      create: { employeeId: input.employeeId, data: input.data, mimeType: input.mimeType },
+      update: { data: input.data, mimeType: input.mimeType },
+    });
+    await writeEmployeeManagementAudit(tx, {
+      actorId: input.actorId,
+      action: 'EMPLOYEE_PHOTO_UPDATED',
+      entityType: 'Employee',
+      entityId: input.employeeId,
+      employeeId: input.employeeId,
+      newValue: {
+        employeeId: input.employeeId,
+        employeeCode: employee.employeeCode,
+        employeeName: employee.fullName,
+        mimeType: input.mimeType,
+      },
+    });
+  });
+  return { ok: true, mimeType: input.mimeType };
+}
+
+export async function removeManagedEmployeePhoto(input: {
+  db: EmployeeManagementDb;
+  actorId: string;
+  employeeId: string;
+}): Promise<{ ok: true } | EmployeeWriteError> {
+  const employee = await input.db.employee.findUnique({
+    where: { id: input.employeeId },
+    include: { user: { select: { role: true } } },
+  });
+  if (!employee) return { ok: false, status: 404, error: 'Employee not found' };
+  const roleOk = assertManagedEmployeeRole(employee.user);
+  if (!roleOk.ok) return roleOk;
+  if (!input.db.employeePhoto) return { ok: false, status: 500, error: 'Photo storage is unavailable' };
+
+  await input.db.$transaction(async (tx) => {
+    if (tx.employeePhoto.deleteMany) {
+      await tx.employeePhoto.deleteMany({ where: { employeeId: input.employeeId } });
+    } else {
+      await tx.employeePhoto.delete({ where: { employeeId: input.employeeId } });
+    }
+    await writeEmployeeManagementAudit(tx, {
+      actorId: input.actorId,
+      action: 'EMPLOYEE_PHOTO_REMOVED',
+      entityType: 'Employee',
+      entityId: input.employeeId,
+      employeeId: input.employeeId,
+      newValue: {
+        employeeId: input.employeeId,
+        employeeCode: employee.employeeCode,
+        employeeName: employee.fullName,
+      },
+    });
+  });
+  return { ok: true };
 }
 
 export async function attachSupervisors(

@@ -14,6 +14,8 @@ import {
   includePeopleEmployee,
   parseEmployeeCreate,
   parseEmployeeUpdate,
+  removeManagedEmployeePhoto,
+  replaceManagedEmployeePhoto,
   toPublicEmployee,
   updateManagedEmployee,
   type EmployeeManagementDb,
@@ -37,6 +39,7 @@ function makeDb() {
     { id: 'proj-1', name: 'Riyadh Night Site', code: 'HQ-01' },
   ];
   const photos: any[] = [];
+  const audits: any[] = [];
   const attendance: any[] = [
     { id: 'att-1', employeeId: 'e-az', projectId: 'proj-old', workedMinutes: 720 },
   ];
@@ -61,6 +64,7 @@ function makeDb() {
         employees: clone(employees),
         users: clone(users),
         photos: clone(photos),
+        audits: clone(audits),
         attendance: clone(attendance),
       };
       try {
@@ -69,6 +73,7 @@ function makeDb() {
         employees.splice(0, employees.length, ...snap.employees);
         users.splice(0, users.length, ...snap.users);
         photos.splice(0, photos.length, ...snap.photos);
+        audits.splice(0, audits.length, ...snap.audits);
         attendance.splice(0, attendance.length, ...snap.attendance);
         throw error;
       }
@@ -146,6 +151,19 @@ function makeDb() {
         const index = photos.findIndex((row) => row.employeeId === args.where.employeeId);
         if (index >= 0) photos.splice(index, 1);
       },
+      async deleteMany(args: any) {
+        for (let i = photos.length - 1; i >= 0; i -= 1) {
+          if (photos[i].employeeId === args.where.employeeId) photos.splice(i, 1);
+        }
+        return { count: 1 };
+      },
+    },
+    auditLog: {
+      async create(args: any) {
+        const row = { id: `audit-${audits.length + 1}`, ...args.data };
+        audits.push(row);
+        return row;
+      },
     },
     attendanceRecord: {
       async update() {
@@ -158,7 +176,7 @@ function makeDb() {
     },
   };
 
-  return { db: api, employees, users, photos, attendance };
+  return { db: api, employees, users, photos, audits, attendance };
 }
 
 const baseCreate = {
@@ -192,15 +210,11 @@ describe('people authorization', () => {
 
 describe('employee create', () => {
   it('ADMIN can create an employee with linked EMPLOYEE user and BN identity', async () => {
-    const { db, attendance } = makeDb();
-    const audits: any[] = [];
+    const { db, attendance, audits } = makeDb();
     const result = await createManagedEmployee({
       db,
       actorId: 'admin-1',
       data: baseCreate,
-      writeAudit: async (row) => {
-        audits.push(row);
-      },
     });
     assert.equal(result.ok, true);
     if (!result.ok) return;
@@ -211,7 +225,7 @@ describe('employee create', () => {
     assert.equal(result.employee.hasPhoto, false);
     assert.equal(employeeJsonHasSecrets(result.employee), false);
     assert.equal(audits[0].action, 'EMPLOYEE_CREATED');
-    assert.equal(audits[0].newValue.passwordSet, true);
+    assert.equal(JSON.parse(audits[0].newValue).passwordSet, true);
     assert.equal(JSON.stringify(audits).includes('NightPass1'), false);
     assert.equal(JSON.stringify(audits[0]).includes('passwordHash'), false);
     assert.equal(attendance[0].projectId, 'proj-old');
@@ -225,7 +239,6 @@ describe('employee create', () => {
       db,
       actorId: 'hr-1',
       data: { ...baseCreate, bn: '71401', password: 'NightPass1', confirmPassword: 'NightPass1' },
-      writeAudit: async () => undefined,
     });
     assert.equal(result.ok, true);
   });
@@ -236,7 +249,6 @@ describe('employee create', () => {
       db,
       actorId: 'admin-1',
       data: baseCreate,
-      writeAudit: async () => undefined,
     });
     assert.equal(result.ok, true);
     assert.equal(JSON.stringify(result).includes('NightPass1'), false);
@@ -246,12 +258,11 @@ describe('employee create', () => {
 
   it('duplicate BN is rejected with 409', async () => {
     const { db } = makeDb();
-    await createManagedEmployee({ db, actorId: 'a', data: baseCreate, writeAudit: async () => undefined });
+    await createManagedEmployee({ db, actorId: 'a', data: baseCreate });
     const second = await createManagedEmployee({
       db,
       actorId: 'a',
       data: { ...baseCreate, fullName: 'Other' },
-      writeAudit: async () => undefined,
     });
     assert.equal(second.ok, false);
     if (!second.ok) assert.equal(second.status, 409);
@@ -264,7 +275,7 @@ describe('employee create', () => {
       throw new Error('user failed');
     };
     await assert.rejects(() =>
-      createManagedEmployee({ db, actorId: 'a', data: baseCreate, writeAudit: async () => undefined })
+      createManagedEmployee({ db, actorId: 'a', data: baseCreate })
     );
     assert.equal(employees.length, 0);
     assert.equal(users.length, 0);
@@ -320,7 +331,6 @@ describe('employee edit', () => {
         supervisorId: null,
         isActive: true,
       },
-      writeAudit: async () => undefined,
     });
     assert.equal(result.ok, true);
     if (!result.ok) return;
@@ -361,7 +371,6 @@ describe('employee edit', () => {
         supervisorId: null,
         isActive: true,
       },
-      writeAudit: async () => undefined,
     });
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.status, 409);
@@ -385,7 +394,6 @@ describe('employee edit', () => {
         supervisorId: null,
         isActive: false,
       },
-      writeAudit: async () => undefined,
     });
     assert.equal(off.ok, true);
     assert.equal(employees[0].isActive, false);
@@ -404,7 +412,6 @@ describe('employee edit', () => {
         supervisorId: null,
         isActive: true,
       },
-      writeAudit: async () => undefined,
     });
     assert.equal(on.ok, true);
     assert.equal(employees[0].isActive, true);
@@ -427,7 +434,6 @@ describe('employee edit', () => {
         supervisorId: 'e-az',
         isActive: true,
       },
-      writeAudit: async () => undefined,
     });
     assert.equal(self.ok, false);
     const badSup = await updateManagedEmployee({
@@ -444,7 +450,6 @@ describe('employee edit', () => {
         supervisorId: 'missing',
         isActive: true,
       },
-      writeAudit: async () => undefined,
     });
     assert.equal(badSup.ok, false);
     const badProj = await updateManagedEmployee({
@@ -461,7 +466,6 @@ describe('employee edit', () => {
         supervisorId: null,
         isActive: true,
       },
-      writeAudit: async () => undefined,
     });
     assert.equal(badProj.ok, false);
   });
@@ -588,5 +592,237 @@ describe('employee photo validation', () => {
     await db.employeePhoto!.delete({ where: { employeeId: 'e-az' } });
     assert.equal(await db.employeePhoto!.findUnique({ where: { employeeId: 'e-az' } }), null);
     assert.equal(employeeInitials('Abdulaziz Abdullah H AlZahrani'), 'AA');
+  });
+});
+
+const azEdit = {
+  fullName: 'Abdulaziz Abdullah H AlZahrani',
+  bn: '71326',
+  mobile: null,
+  position: 'Operator',
+  department: 'Operations',
+  defaultProjectId: 'proj-1',
+  supervisorId: null,
+  isActive: true,
+};
+
+async function seedLinked(role = 'EMPLOYEE', id = 'e-az', bn = '71326') {
+  const ctx = makeDb();
+  const hash = await bcrypt.hash('KeepOldPass1', 10);
+  const user = { id: `u-${id}`, username: bn, passwordHash: hash, role, isActive: true, employeeId: id };
+  ctx.db.seed(
+    {
+      id,
+      employeeCode: bn,
+      badgeNumber: bn,
+      fullName: role === 'EMPLOYEE' ? 'Abdulaziz Abdullah H AlZahrani' : `${role} Person`,
+      mobile: null,
+      position: role === 'EMPLOYEE' ? 'Operator' : role,
+      department: 'Operations',
+      company: 'Bin Quraya',
+      defaultProjectId: 'proj-1',
+      supervisorId: null,
+      isActive: true,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      user,
+    },
+    user
+  );
+  ctx.employees[0].user = ctx.users[0];
+  return ctx;
+}
+
+describe('employee write + audit atomicity', () => {
+  it('create audit failure rolls back Employee and User', async () => {
+    const { db, employees, users, audits } = makeDb();
+    db.auditLog.create = async () => {
+      throw new Error('audit failed');
+    };
+    await assert.rejects(() => createManagedEmployee({ db, actorId: 'admin-1', data: baseCreate }));
+    assert.equal(employees.length, 0);
+    assert.equal(users.length, 0);
+    assert.equal(audits.length, 0);
+  });
+
+  it('update audit failure rolls back Employee and User changes', async () => {
+    const { db, employees, users, audits } = await seedLinked();
+    db.auditLog.create = async () => {
+      throw new Error('audit failed');
+    };
+    await assert.rejects(() =>
+      updateManagedEmployee({
+        db,
+        actorId: 'admin-1',
+        employeeId: 'e-az',
+        data: { ...azEdit, fullName: 'Changed Name', bn: '71399' },
+      })
+    );
+    assert.equal(employees[0].fullName, 'Abdulaziz Abdullah H AlZahrani');
+    assert.equal(employees[0].employeeCode, '71326');
+    assert.equal(users[0].username, '71326');
+    assert.equal(audits.length, 0);
+  });
+
+  it('BN change and audit commit together', async () => {
+    const { db, employees, users, audits } = await seedLinked();
+    const result = await updateManagedEmployee({
+      db,
+      actorId: 'admin-1',
+      employeeId: 'e-az',
+      data: { ...azEdit, bn: '71399' },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(employees[0].employeeCode, '71399');
+    assert.equal(employees[0].badgeNumber, '71399');
+    assert.equal(users[0].username, '71399');
+    assert.equal(audits[0].action, 'EMPLOYEE_UPDATED');
+    const payload = JSON.parse(audits[0].newValue);
+    assert.equal(payload.oldBn, '71326');
+    assert.equal(payload.newBn, '71399');
+    db.auditLog.create = async () => {
+      throw new Error('audit failed');
+    };
+    await assert.rejects(() =>
+      updateManagedEmployee({
+        db,
+        actorId: 'admin-1',
+        employeeId: 'e-az',
+        data: { ...azEdit, bn: '71444' },
+      })
+    );
+    assert.equal(employees[0].employeeCode, '71399');
+    assert.equal(users[0].username, '71399');
+    assert.equal(audits.length, 1);
+  });
+
+  it('status change and audit commit together', async () => {
+    const { db, employees, users, audits } = await seedLinked();
+    const off = await updateManagedEmployee({
+      db,
+      actorId: 'admin-1',
+      employeeId: 'e-az',
+      data: { ...azEdit, isActive: false },
+    });
+    assert.equal(off.ok, true);
+    assert.equal(employees[0].isActive, false);
+    assert.equal(users[0].isActive, false);
+    assert.equal(audits[0].action, 'EMPLOYEE_STATUS_CHANGED');
+    db.auditLog.create = async () => {
+      throw new Error('audit failed');
+    };
+    await assert.rejects(() =>
+      updateManagedEmployee({
+        db,
+        actorId: 'admin-1',
+        employeeId: 'e-az',
+        data: { ...azEdit, isActive: true },
+      })
+    );
+    assert.equal(employees[0].isActive, false);
+    assert.equal(users[0].isActive, false);
+    assert.equal(audits.length, 1);
+  });
+});
+
+describe('photo write + audit atomicity', () => {
+  it('photo upload audit failure rolls back the photo change', async () => {
+    const { db, photos, audits } = await seedLinked();
+    db.auditLog.create = async () => {
+      throw new Error('audit failed');
+    };
+    await assert.rejects(() =>
+      replaceManagedEmployeePhoto({
+        db,
+        actorId: 'admin-1',
+        employeeId: 'e-az',
+        data: new Uint8Array([1, 2, 3, 4]),
+        mimeType: 'image/webp',
+      })
+    );
+    assert.equal(photos.length, 0);
+    assert.equal(audits.length, 0);
+  });
+
+  it('photo removal audit failure rolls back the photo', async () => {
+    const { db, photos, audits } = await seedLinked();
+    const uploaded = await replaceManagedEmployeePhoto({
+      db,
+      actorId: 'admin-1',
+      employeeId: 'e-az',
+      data: new Uint8Array([9, 8, 7]),
+      mimeType: 'image/webp',
+    });
+    assert.equal(uploaded.ok, true);
+    assert.equal(photos.length, 1);
+    assert.equal(audits[0].action, 'EMPLOYEE_PHOTO_UPDATED');
+    assert.equal(JSON.stringify(audits).includes('[9,8,7]'), false);
+    db.auditLog.create = async () => {
+      throw new Error('audit failed');
+    };
+    await assert.rejects(() =>
+      removeManagedEmployeePhoto({ db, actorId: 'admin-1', employeeId: 'e-az' })
+    );
+    assert.equal(photos.length, 1);
+    assert.equal(audits.length, 1);
+  });
+});
+
+describe('non-employee account protection', () => {
+  it('direct PATCH cannot modify an Employee linked to ADMIN', async () => {
+    const { db, employees, users } = await seedLinked('ADMIN', 'e-admin', 'ADMIN01');
+    const result = await updateManagedEmployee({
+      db,
+      actorId: 'admin-1',
+      employeeId: 'e-admin',
+      data: { ...azEdit, fullName: 'Hacked Admin', bn: 'HACKED', isActive: false },
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.ok(result.status === 403 || result.status === 409);
+    }
+    assert.equal(employees[0].fullName, 'ADMIN Person');
+    assert.equal(employees[0].employeeCode, 'ADMIN01');
+    assert.equal(employees[0].isActive, true);
+    assert.equal(users[0].username, 'ADMIN01');
+    assert.equal(users[0].isActive, true);
+    assert.equal(users[0].role, 'ADMIN');
+  });
+
+  it('direct PATCH cannot modify an Employee linked to HR or SUPERVISOR', async () => {
+    for (const role of ['HR', 'SUPERVISOR'] as const) {
+      const { db, employees, users } = await seedLinked(role, `e-${role.toLowerCase()}`, `${role}01`);
+      const result = await updateManagedEmployee({
+        db,
+        actorId: 'admin-1',
+        employeeId: `e-${role.toLowerCase()}`,
+        data: { ...azEdit, fullName: `Hacked ${role}`, bn: 'HACKED', isActive: false },
+      });
+      assert.equal(result.ok, false);
+      if (!result.ok) {
+        assert.ok(result.status === 403 || result.status === 409);
+      }
+      assert.equal(employees[0].fullName, `${role} Person`);
+      assert.equal(employees[0].employeeCode, `${role}01`);
+      assert.equal(employees[0].isActive, true);
+      assert.equal(users[0].username, `${role}01`);
+      assert.equal(users[0].role, role);
+    }
+  });
+
+  it('normal EMPLOYEE-linked record remains editable by ADMIN and HR', async () => {
+    for (const actorId of ['admin-1', 'hr-1']) {
+      const { db, employees, users } = await seedLinked();
+      const result = await updateManagedEmployee({
+        db,
+        actorId,
+        employeeId: 'e-az',
+        data: { ...azEdit, fullName: `Edited by ${actorId}`, position: 'Lead Operator' },
+      });
+      assert.equal(result.ok, true);
+      assert.equal(employees[0].fullName, `Edited by ${actorId}`);
+      assert.equal(employees[0].position, 'Lead Operator');
+      assert.equal(users[0].username, '71326');
+      assert.equal(users[0].role, 'EMPLOYEE');
+    }
   });
 });

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSession, writeAudit } from '@/lib/auth';
+import { getSession } from '@/lib/auth';
 import { prisma } from '@/lib/db';
 import {
   attachSupervisors,
@@ -36,6 +36,9 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
   const { id } = await ctx.params;
   const employee = await loadPublicEmployee(id);
   if (!employee) return NextResponse.json({ error: 'Employee not found' }, { status: 404 });
+  if (employee.user && employee.user.role !== 'EMPLOYEE') {
+    return NextResponse.json({ error: 'This account cannot be managed from People' }, { status: 403 });
+  }
   return NextResponse.json({ employee });
 }
 
@@ -55,7 +58,6 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     actorId: auth.sub,
     employeeId: id,
     data: parsed.data,
-    writeAudit,
   });
   if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
   const employee = (await loadPublicEmployee(id)) || result.employee;

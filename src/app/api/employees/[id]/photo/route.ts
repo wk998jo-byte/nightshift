@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSession, writeAudit } from '@/lib/auth';
+import { getSession } from '@/lib/auth';
 import { prisma } from '@/lib/db';
-import { canManagePeople, canViewPeople } from '@/lib/employee-management';
+import {
+  canManagePeople,
+  canViewPeople,
+  removeManagedEmployeePhoto,
+  replaceManagedEmployeePhoto,
+} from '@/lib/employee-management';
 import { normalizeEmployeePhoto, validateEmployeePhotoUpload } from '@/lib/employee-photo';
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -35,36 +40,20 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
   const { id } = await ctx.params;
-  const employee = await prisma.employee.findUnique({ where: { id }, select: { id: true, fullName: true, employeeCode: true } });
-  if (!employee) return NextResponse.json({ error: 'Employee not found' }, { status: 404 });
-
   const buffer = Buffer.from(await req.arrayBuffer());
   const valid = validateEmployeePhotoUpload(buffer);
   if (!valid.ok) return NextResponse.json({ error: valid.error }, { status: valid.status });
 
   const normalized = await normalizeEmployeePhoto(buffer);
-  const bytes = new Uint8Array(normalized.data);
-  await prisma.employeePhoto.upsert({
-    where: { employeeId: id },
-    create: { employeeId: id, data: bytes, mimeType: normalized.mimeType },
-    update: { data: bytes, mimeType: normalized.mimeType },
-  });
-
-  await writeAudit({
+  const result = await replaceManagedEmployeePhoto({
+    db: prisma,
     actorId: auth.sub,
-    action: 'EMPLOYEE_PHOTO_UPDATED',
-    entityType: 'Employee',
-    entityId: id,
     employeeId: id,
-    newValue: {
-      employeeId: id,
-      employeeCode: employee.employeeCode,
-      employeeName: employee.fullName,
-      mimeType: normalized.mimeType,
-    },
+    data: new Uint8Array(normalized.data),
+    mimeType: normalized.mimeType,
   });
-
-  return NextResponse.json({ ok: true, mimeType: normalized.mimeType });
+  if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
+  return NextResponse.json({ ok: true, mimeType: result.mimeType });
 }
 
 export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
@@ -74,21 +63,11 @@ export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ id: str
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
   const { id } = await ctx.params;
-  const employee = await prisma.employee.findUnique({ where: { id }, select: { id: true, fullName: true, employeeCode: true } });
-  if (!employee) return NextResponse.json({ error: 'Employee not found' }, { status: 404 });
-
-  await prisma.employeePhoto.deleteMany({ where: { employeeId: id } });
-  await writeAudit({
+  const result = await removeManagedEmployeePhoto({
+    db: prisma,
     actorId: auth.sub,
-    action: 'EMPLOYEE_PHOTO_REMOVED',
-    entityType: 'Employee',
-    entityId: id,
     employeeId: id,
-    newValue: {
-      employeeId: id,
-      employeeCode: employee.employeeCode,
-      employeeName: employee.fullName,
-    },
   });
+  if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
   return NextResponse.json({ ok: true });
 }
