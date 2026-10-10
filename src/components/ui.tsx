@@ -135,10 +135,12 @@ export function EmployeeAvatar({
   name,
   badge,
   size = 'md',
+  photoSrc,
 }: {
   name: string;
   badge: string;
   size?: 'sm' | 'md' | 'lg';
+  photoSrc?: string | null;
 }) {
   const color = employeeColor(badge);
   const initials = employeeInitials(name);
@@ -147,6 +149,18 @@ export function EmployeeAvatar({
     md: 'h-12 w-12 text-sm',
     lg: 'h-16 w-16 text-lg',
   };
+  if (photoSrc) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        src={photoSrc}
+        alt={name}
+        className={`inline-flex shrink-0 rounded-2xl object-cover ring-2 ${sizes[size]}`}
+        style={{ boxShadow: `0 0 0 1px ${color.ring}` }}
+        title={`${name} · BN# ${badge}`}
+      />
+    );
+  }
   return (
     <div
       className={`inline-flex shrink-0 items-center justify-center rounded-2xl font-bold ring-2 ${sizes[size]}`}

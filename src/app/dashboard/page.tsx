@@ -17,6 +17,7 @@ import BfCacheReload from '@/components/bfcache-reload';
 import ShiftScheduleTab from './shift-schedule-tab';
 import DayExceptionsTab from './day-exceptions-tab';
 import ExportAttendanceDrawer from './export-attendance-drawer';
+import PeopleTab from './people-tab';
 import AttendanceDetailsDrawer, {
   type AttendanceDetailsPayload,
 } from './attendance-details-drawer';
@@ -50,18 +51,6 @@ type RecordRow = {
   overtimeMinutes: number;
   statusPrimary: string;
   virtualAbsent?: boolean;
-};
-
-type Emp = {
-  id: string;
-  fullName: string;
-  employeeCode: string;
-  badgeNumber: string;
-  department: string | null;
-  position: string | null;
-  isActive: boolean;
-  defaultProject: { name: string } | null;
-  user: { role: string; username: string } | null;
 };
 
 type Proj = {
@@ -142,7 +131,6 @@ export default function DashboardPage() {
       lateMinutes: number;
     }>
   >([]);
-  const [employees, setEmployees] = useState<Emp[]>([]);
   const [activeEmployees, setActiveEmployees] = useState<
     Array<{ id: string; fullName: string; employeeCode: string; badgeNumber: string }>
   >([]);
@@ -207,11 +195,6 @@ export default function DashboardPage() {
   }, [boot, loadTonight]);
 
   useEffect(() => {
-    if (section === 'people') {
-      fetch('/api/employees')
-        .then((r) => r.json())
-        .then((d) => setEmployees(d.employees || []));
-    }
     if (section === 'projects') {
       fetch('/api/projects')
         .then((r) => r.json())
@@ -605,47 +588,7 @@ export default function DashboardPage() {
           <DayExceptionsTab correctionPrefill={correctionPrefill} />
         ) : null}
 
-        {section === 'people' ? (
-          <Surface>
-            <h2 className="mb-4 text-lg font-bold text-slate-900">Employees</h2>
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {employees.map((e) => (
-                <div
-                  key={e.id}
-                  className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm"
-                >
-                  <div className="flex items-start gap-3">
-                    <EmployeeAvatar
-                      name={e.fullName}
-                      badge={e.badgeNumber || e.employeeCode}
-                      size="lg"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <p className="font-bold text-slate-900">{e.fullName}</p>
-                          <p className="mt-0.5 text-sm font-semibold text-[#C8102E]">
-                            BN# {e.badgeNumber || e.employeeCode}
-                          </p>
-                        </div>
-                        <StatusChip tone={e.isActive ? 'ok' : 'danger'}>
-                          {e.isActive ? 'Active' : 'Inactive'}
-                        </StatusChip>
-                      </div>
-                      <p className="mt-2 text-sm text-slate-700">{e.position || '—'}</p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        {e.defaultProject?.name || '—'}
-                        {e.department ? ` · ${e.department}` : ''}
-                        {' · Login: '}
-                        {e.user?.username || '—'}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Surface>
-        ) : null}
+        {section === 'people' ? <PeopleTab role={role} /> : null}
 
         {section === 'projects' ? (
           <div className="grid gap-4 md:grid-cols-2">

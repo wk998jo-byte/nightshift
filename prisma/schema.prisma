@@ -81,6 +81,16 @@ model Employee {
   devices      Device[]
   supervisedProjects ProjectSupervisor[]
   dayExceptions DayException[]
+  photo         EmployeePhoto?
+}
+
+model EmployeePhoto {
+  employeeId String   @id
+  data       Bytes
+  mimeType   String
+  updatedAt  DateTime @updatedAt
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
 }
 
 model Project {
