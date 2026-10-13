@@ -1,6 +1,7 @@
 import { createHmac, randomBytes, createHash } from 'crypto';
 import { SignJWT, jwtVerify } from 'jose';
 import { SESSION_JWT_EXPIRATION } from './session-policy';
+import type { QrErrorCode } from './qr-errors';
 
 function requiredSecret(name: 'AUTH_SECRET' | 'QR_SECRET'): string {
   const value = process.env[name]?.trim();
@@ -80,14 +81,15 @@ export function verifyQrToken(token: string): {
   terminalId?: string;
   exp?: string;
   reason?: string;
+  code?: QrErrorCode;
 } {
   const parts = token.split('.');
   if (parts.length !== 3 || parts[0] !== 'ns_v1') {
-    return { ok: false, reason: 'Invalid QR format' };
+    return { ok: false, reason: 'Invalid QR format', code: 'QR_INVALID_FORMAT' };
   }
   const [, body, sig] = parts;
   const expected = createHmac('sha256', qrSecret()).update(body).digest('base64url');
-  if (expected !== sig) return { ok: false, reason: 'Invalid QR signature' };
+  if (expected !== sig) return { ok: false, reason: 'Invalid QR signature', code: 'QR_INVALID_SIGNATURE' };
   try {
     const data = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as {
       sid: string;
@@ -95,8 +97,12 @@ export function verifyQrToken(token: string): {
       tid: string;
       exp: string;
     };
-    if (new Date(data.exp).getTime() < Date.now()) {
-      return { ok: false, reason: 'Expired QR' };
+    if (![data.sid, data.pid, data.tid, data.exp].every((value) => typeof value === 'string' && value.length > 0)
+      || !Number.isFinite(new Date(data.exp).getTime())) {
+      return { ok: false, reason: 'Invalid QR format', code: 'QR_INVALID_FORMAT' };
+    }
+    if (new Date(data.exp).getTime() <= Date.now()) {
+      return { ok: false, reason: 'Expired QR', code: 'QR_EXPIRED' };
     }
     return {
       ok: true,
@@ -106,7 +112,7 @@ export function verifyQrToken(token: string): {
       exp: data.exp,
     };
   } catch {
-    return { ok: false, reason: 'Corrupt QR' };
+    return { ok: false, reason: 'Corrupt QR', code: 'QR_INVALID_FORMAT' };
   }
 }
 

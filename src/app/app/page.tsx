@@ -3,7 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { BrandButton, EmployeeAvatar, Logo, StatusChip, Surface } from '@/components/ui';
-import { lateMinutesAfterGrace } from '@/lib/attendance-calc';
+import { formatDuration, lateMinutesAfterGrace } from '@/lib/attendance-calc';
+import { subscribeEmployeeForegroundRefresh } from '@/lib/employee-live-refresh';
+import { createPunchSubmissionGuard } from '@/lib/employee-punch';
+import { isRecoverableQrError, QR_RESCAN_MESSAGE } from '@/lib/qr-errors';
 import { employeeCheckInTimingView } from '@/lib/attendance-state';
 import { getBrowserDeviceId } from '@/lib/browser-device-id';
 import { startQrScanner, stopMediaStream, type BarcodeDetectorLike } from '@/lib/qr-scanner';
@@ -69,7 +72,7 @@ type Today = {
     checkOutAt: string | null;
     workedMinutes: number | null;
     lateMinutes: number;
-    overtimeMinutes: number;
+    overtimeMinutes: number | null;
     statusPrimary: string;
   }>;
 };
@@ -124,28 +127,43 @@ export default function EmployeeAppPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const scanRef = useRef<{ stop: () => void } | null>(null);
+  const punchGuard = useRef(createPunchSubmissionGuard());
+  const cameraGeneration = useRef(0);
+  const [rescanMode, setRescanMode] = useState<'in' | 'out' | null>(null);
+  const loadSequence = useRef(0);
 
   const load = useCallback(async () => {
+    const sequence = ++loadSequence.current;
     const res = await fetch('/api/me/today', employeeTodayFetchInit());
+    if (sequence !== loadSequence.current) return;
     if (res.status === 401) {
       router.replace('/login');
       return;
     }
-    setData(await res.json());
+    if (!res.ok) throw new Error('Unable to refresh attendance.');
+    const today = await res.json();
+    if (sequence === loadSequence.current) setData(today);
   }, [router]);
 
   useEffect(() => {
-    void load();
-    const t = setInterval(() => void load(), 30000);
+    const refresh = () => void load().catch(() => setError('Connection unavailable. Try refreshing again.'));
+    refresh();
+    const t = setInterval(refresh, 30000);
     const c = setInterval(() => setNow(new Date()), 1000);
+    const unsubscribe = subscribeEmployeeForegroundRefresh(
+      window, document, () => document.visibilityState === 'visible',
+      refresh,
+    );
     return () => {
       clearInterval(t);
       clearInterval(c);
+      unsubscribe();
     };
   }, [load]);
 
   useEffect(() => {
     return () => {
+      cameraGeneration.current++;
       scanRef.current?.stop();
       scanRef.current = null;
       stopMediaStream(streamRef.current);
@@ -165,7 +183,12 @@ export default function EmployeeAppPage() {
   }
 
   async function startCamera(nextMode: 'in' | 'out') {
+    if (busy) return;
+    stopCamera();
+    const generation = ++cameraGeneration.current;
     setMode(nextMode);
+    setRescanMode(null);
+    setManualToken('');
     setError('');
     setSuccess(null);
     setGpsHint('Preparing camera & location…');
@@ -177,12 +200,17 @@ export default function EmployeeAppPage() {
         video: { facingMode: { ideal: 'environment' } },
         audio: false,
       });
+      if (generation !== cameraGeneration.current) {
+        stopMediaStream(stream);
+        return;
+      }
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.setAttribute('playsinline', 'true');
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
+      if (generation !== cameraGeneration.current) return;
       if (!videoRef.current) {
         setError('Camera preview failed. Paste the QR token below.');
         setGpsHint('');
@@ -202,14 +230,17 @@ export default function EmployeeAppPage() {
           setError('QR scanner engine is unavailable on this browser. Paste the QR token below.');
         },
       });
-      scanRef.current = handle;
+      if (generation !== cameraGeneration.current) handle.stop();
+      else scanRef.current = handle;
     } catch {
+      if (generation !== cameraGeneration.current) return;
       setError('Camera unavailable. Paste QR token below or allow camera.');
       setGpsHint('');
     }
   }
 
   function stopCamera() {
+    cameraGeneration.current++;
     scanRef.current?.stop();
     scanRef.current = null;
     stopMediaStream(streamRef.current);
@@ -219,6 +250,16 @@ export default function EmployeeAppPage() {
   }
 
   async function submitToken(token: string, nextMode: 'in' | 'out') {
+    const admission = punchGuard.current.begin(token);
+    if (admission !== 'accepted') {
+      if (admission === 'stale') {
+        stopCamera();
+        setManualToken('');
+        setRescanMode(nextMode);
+        setError(QR_RESCAN_MESSAGE);
+      }
+      return;
+    }
     setBusy(true);
     setError('');
     setGpsHint('Verifying GPS & QR on server…');
@@ -235,11 +276,21 @@ export default function EmployeeAppPage() {
       });
       const json = await res.json();
       if (!res.ok) {
-        setError(json.error || 'Attendance failed');
+        if (isRecoverableQrError(json.code)) {
+          punchGuard.current.reject(token);
+          stopCamera();
+          setManualToken('');
+          setRescanMode(nextMode);
+          setError(QR_RESCAN_MESSAGE);
+        } else {
+          setError(json.error || 'Attendance failed');
+        }
         setGpsHint('');
         return;
       }
       stopCamera();
+      setManualToken('');
+      setRescanMode(null);
       if (nextMode === 'in') {
         const a = json.attendance;
         setSuccess(
@@ -248,7 +299,7 @@ export default function EmployeeAppPage() {
       } else {
         const a = json.attendance;
         setSuccess(
-          `تم إنهاء الشفت\nWorked ${Math.floor((a.workedMinutes || 0) / 60)}h ${String((a.workedMinutes || 0) % 60).padStart(2, '0')}m\nOT ${a.overtimeMinutes}m · Early leave ${a.earlyLeaveMinutes}m`
+          `تم إنهاء الشفت\nWorked ${formatDuration(a.workedMinutes)}\nOT ${formatDuration(a.overtimeMinutes)} · Short ${formatDuration(a.earlyLeaveMinutes)}`
         );
       }
       await load();
@@ -262,6 +313,7 @@ export default function EmployeeAppPage() {
       );
       setGpsHint('');
     } finally {
+      punchGuard.current.finish();
       setBusy(false);
     }
   }
@@ -378,6 +430,11 @@ export default function EmployeeAppPage() {
 
         {tab === 'home' ? (
           <div className="space-y-4 animate-fade-up">
+            {rescanMode && (
+              <BrandButton disabled={busy} onClick={() => void startCamera(rescanMode)}>
+                Scan current QR again
+              </BrandButton>
+            )}
             <Surface>
               <div className="flex items-end justify-between">
                 <div>
@@ -604,7 +661,9 @@ export default function EmployeeAppPage() {
                       <p className="mt-1 text-sm text-slate-600">
                         Worked {fmt(h.workedMinutes)}
                         {h.lateMinutes > 0 ? ` · Late ${h.lateMinutes}m` : ''}
-                        {h.overtimeMinutes > 0 ? ` · OT ${h.overtimeMinutes}m` : ''}
+                        {` · OT ${formatDuration(
+                          h.checkOutAt && h.statusPrimary !== 'MISSING_CHECKOUT' ? h.overtimeMinutes : null
+                        )}`}
                       </p>
                     </div>
                     <StatusChip

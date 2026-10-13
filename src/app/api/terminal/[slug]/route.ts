@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/db';
 import { createQrToken, hashToken } from '@/lib/security';
 import { randomUUID } from 'crypto';
+import { expiredQrSessions, qrDeadlines } from '@/lib/qr-lifecycle';
 
 function requestHostname(req: NextRequest): string {
   const forwarded = req.headers.get('x-forwarded-host');
@@ -50,7 +51,8 @@ export async function POST(
   }
 
   const rotation = terminal.rotationSeconds || 30;
-  const expiresAt = new Date(Date.now() + rotation * 1000);
+  const issuedAt = new Date();
+  const { rotatesAt, expiresAt } = qrDeadlines(issuedAt, rotation);
   const sessionId = randomUUID();
   const token = createQrToken({
     sessionId,
@@ -60,8 +62,8 @@ export async function POST(
   });
 
   await prisma.qrSession.updateMany({
-    where: { terminalId: terminal.id, revokedAt: null },
-    data: { revokedAt: new Date() },
+    where: expiredQrSessions(terminal.id, issuedAt),
+    data: { revokedAt: issuedAt },
   });
 
   await prisma.qrSession.create({
@@ -70,6 +72,7 @@ export async function POST(
       terminalId: terminal.id,
       projectId: terminal.projectId,
       tokenHash: hashToken(token),
+      issuedAt,
       expiresAt,
     },
   });
@@ -81,6 +84,7 @@ export async function POST(
 
   return NextResponse.json({
     token,
+    rotatesAt: rotatesAt.toISOString(),
     expiresAt: expiresAt.toISOString(),
     rotationSeconds: rotation,
     project: {

@@ -27,7 +27,7 @@ export const EXPORT_COLUMNS = [
   'Worked',
   'Late (min)',
   'Short (min)',
-  'OT (min)',
+  'OT',
   'Status',
   'Flags',
 ] as const;
@@ -406,7 +406,7 @@ export function buildExportRows(
         worked: display.workedMinutes == null ? '—' : formatDuration(display.workedMinutes),
         late: String(display.lateMinutes),
         earlyLeave: !checkOutAt || stale ? '—' : String(display.earlyLeaveMinutes ?? 0),
-        ot: !checkOutAt || stale ? '—' : String(display.overtimeMinutes ?? 0),
+        ot: !checkOutAt || stale ? '—' : formatDuration(display.overtimeMinutes),
         status: display.status,
         flags: display.flags.join('|'),
         workedMinutes: display.workedMinutes,

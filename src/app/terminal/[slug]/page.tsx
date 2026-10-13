@@ -14,7 +14,7 @@ export default function TerminalPage() {
   } | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [token, setToken] = useState('');
-  const [expiresAt, setExpiresAt] = useState<Date | null>(null);
+  const [rotatesAt, setRotatesAt] = useState<Date | null>(null);
   const [now, setNow] = useState(new Date());
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
@@ -45,6 +45,7 @@ export default function TerminalPage() {
           headers: { 'Content-Type': 'application/json' },
         });
         const data = await res.json();
+        if (cancelled) return;
         if (!res.ok) {
           setError(data.error || 'Rotate failed');
           timer = setTimeout(rotate, 5000);
@@ -57,17 +58,19 @@ export default function TerminalPage() {
           margin: 2,
           color: { dark: '#C8102E', light: '#FFFFFF' },
         });
+        if (cancelled) return;
         setQrDataUrl(url);
         setToken(data.token);
-        setExpiresAt(new Date(data.expiresAt));
+        setRotatesAt(new Date(data.rotatesAt));
         setMeta((m) =>
           m
             ? { ...m, rotationSeconds: data.rotationSeconds, project: data.project }
             : { rotationSeconds: data.rotationSeconds, project: data.project }
         );
-        const ms = Math.max(1000, new Date(data.expiresAt).getTime() - Date.now() - 500);
+        const ms = Math.max(1000, new Date(data.rotatesAt).getTime() - Date.now());
         timer = setTimeout(rotate, ms);
       } catch {
+        if (cancelled) return;
         setError('Connection issue — retrying…');
         timer = setTimeout(rotate, 5000);
       }
@@ -80,11 +83,11 @@ export default function TerminalPage() {
     };
   }, [slug]);
 
-  const secondsLeft = expiresAt
-    ? Math.max(0, Math.ceil((expiresAt.getTime() - now.getTime()) / 1000))
+  const secondsLeft = rotatesAt
+    ? Math.max(0, Math.ceil((rotatesAt.getTime() - now.getTime()) / 1000))
     : 0;
   const progress =
-    meta?.rotationSeconds && expiresAt
+    meta?.rotationSeconds && rotatesAt
       ? Math.min(100, (secondsLeft / meta.rotationSeconds) * 100)
       : 0;
 

@@ -69,6 +69,33 @@ function asg(
 }
 
 describe('export date range parsing', () => {
+  it('244 numeric OT exports as 4h 04m without changing the summary arithmetic', () => {
+    const rows = buildExportRows([asg({
+      employeeId: 'duration-fixture',
+      workDate: '2026-09-21',
+      employee: person('Duration Fixture', '98765'),
+      shift: shift1,
+      attendance: [{
+        checkInAt: new Date('2026-09-21T12:30:00Z'),
+        checkOutAt: new Date('2026-09-22T00:34:00Z'),
+        workedMinutes: 724,
+        lateMinutes: 0,
+        earlyLeaveMinutes: 0,
+        overtimeMinutes: 244,
+        statusPrimary: 'ON_TIME',
+        flags: '["PRESENT","ON_TIME","OVERTIME"]',
+      }],
+    })], new Date('2026-09-22T12:00:00Z'));
+    assert.equal(rows[0].ot, '4h 04m');
+    assert.equal(rows[0].overtimeMinutes, 244);
+    assert.equal(summarizeExportRows(rows)[0].totalOtMinutes, 244);
+    assert.equal(summarizeExportRows(rows)[0].totalOt, '4h 04m');
+    const csv = rowsToCsv(rows);
+    assert.equal(csv.startsWith('\uFEFF'), true);
+    assert.match(csv, /,OT,/);
+    assert.match(csv, /4h 04m/);
+    assert.equal(csv.includes('OT (min)'), false);
+  });
   it('legacy ?date= still works as a one-day range', () => {
     const range = parseExportRange({ date: '2026-09-23' });
     assert.deepEqual(range, { ok: true, from: '2026-09-23', to: '2026-09-23' });
@@ -449,13 +476,13 @@ describe('export administrative statuses', () => {
     assert.notEqual(rows[0].checkIn, '—');
     assert.notEqual(rows[0].checkOut, '—');
     assert.equal(rows[0].worked, '12h 00m');
-    assert.equal(rows[0].ot, '720');
+    assert.equal(rows[0].ot, '12h 00m');
     const holidaySummary = summarizeExportRows(rows);
     assert.equal(holidaySummary[0].totalOt, '12h 00m');
     assert.equal(holidaySummary[0].totalOtMinutes, 720);
   });
 
-  it('completed 12-hour ON_TIME row still exports OT minutes', () => {
+  it('completed 12-hour ON_TIME row exports duration OT and retains numeric totals', () => {
     const rows = buildExportRows(
       [
         asg({
@@ -481,7 +508,8 @@ describe('export administrative statuses', () => {
     );
     assert.equal(rows[0].status, 'ON_TIME');
     assert.equal(rows[0].worked, '12h 00m');
-    assert.equal(rows[0].ot, '240');
+    assert.equal(rows[0].ot, '4h 00m');
+    assert.equal(rows[0].overtimeMinutes, 240);
     assert.equal(rows[0].late, '0');
     assert.equal(rows[0].earlyLeave, '0');
     assert.match(rows[0].flags, /OVERTIME/);
@@ -596,7 +624,7 @@ describe('export administrative statuses', () => {
       ]
     );
     assert.equal(rows[0].worked, '4h 00m');
-    assert.equal(rows[0].ot, '0');
+    assert.equal(rows[0].ot, '0h 00m');
     assert.equal(rows[0].earlyLeave, '0');
     assert.match(rows[0].flags, /HALF_DAY/);
   });
@@ -766,9 +794,9 @@ describe('export employee filter and summaries', () => {
     const onTimeOt = rows.find((r) => r.bn === '71326')!;
     assert.equal(lateOt.status, 'LATE');
     assert.equal(lateOt.late, '20');
-    assert.equal(lateOt.ot, '60');
+    assert.equal(lateOt.ot, '1h 00m');
     assert.equal(onTimeOt.status, 'ON_TIME');
-    assert.equal(onTimeOt.ot, '240');
+    assert.equal(onTimeOt.ot, '4h 00m');
     assert.match(onTimeOt.flags, /OVERTIME/);
   });
 
@@ -837,7 +865,8 @@ describe('export employee filter and summaries', () => {
     assert.match(csv, /Detailed Attendance/);
     assert.match(csv, /\n\nSummary\n/);
     assert.match(csv, /Total Worked,Total Late Minutes,Total Short Minutes,Total OT,/);
-    assert.match(csv, /OT \(min\)/);
+    assert.match(csv, /,OT,/);
+    assert.equal(csv.includes('OT (min)'), false);
     assert.equal(csv.includes('Total OT Minutes'), false);
     assert.deepEqual(EXPORT_SUMMARY_COLUMNS, [
       'Employee',
@@ -849,7 +878,7 @@ describe('export employee filter and summaries', () => {
       'Late Days',
       'Missing Checkout',
     ]);
-    assert.equal(EXPORT_COLUMNS.includes('OT (min)'), true);
+    assert.equal(EXPORT_COLUMNS.includes('OT'), true);
     assert.match(csv, /19h 00m/);
   });
 

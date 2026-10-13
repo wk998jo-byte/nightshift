@@ -7,6 +7,7 @@ import { BrandButton, EmployeeAvatar, Logo, StatCard, StatusChip, Surface } from
 import { shortName } from '@/lib/employee-identity';
 import { canManageSchedule } from '@/lib/shift-catalog';
 import { filterBoardRows } from '@/lib/dashboard-board';
+import { formatDuration } from '@/lib/attendance-calc';
 import { completeLogout } from '@/lib/session-policy';
 import { dashboardLiveFetchInit } from '@/lib/page-cache';
 import {
@@ -521,9 +522,9 @@ export default function DashboardPage() {
                             {r.checkInAt ? `${r.lateMinutes}m` : '—'}
                           </td>
                           <td className="py-3.5 pr-2">
-                            {r.statusPrimary === 'MISSING_CHECKOUT' || !r.checkInAt
+                            {r.statusPrimary === 'MISSING_CHECKOUT' || !r.checkInAt || !r.checkOutAt
                               ? '—'
-                              : `${r.overtimeMinutes}m`}
+                              : formatDuration(r.overtimeMinutes)}
                           </td>
                           <td className="py-3.5">
                             <StatusChip tone={toneFor(r.statusPrimary)}>

@@ -4,7 +4,8 @@ import { prisma } from '@/lib/db';
 import { isInsideRadius } from '@/lib/geo';
 import { calculateAttendance } from '@/lib/attendance-calc';
 import { resolveAttendanceDayPolicy } from '@/lib/attendance-policy';
-import { fingerprintFromRequest, hashToken, verifyQrToken } from '@/lib/security';
+import { fingerprintFromRequest } from '@/lib/security';
+import { validatePunchQr } from '@/lib/qr-validation';
 import { observePunchDevice, recordDeviceWarnings } from '@/lib/device-security';
 import { AttendanceMethod } from '@prisma/client';
 import { resolveCheckoutTarget, withShiftCheckoutWindow } from '@/lib/open-attendance';
@@ -17,27 +18,16 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json().catch(() => ({}));
-  const token = String(body.token || '');
+  const token = body.token;
   const latitude = body.latitude as number | undefined;
   const longitude = body.longitude as number | undefined;
 
   if (latitude == null || longitude == null) {
     return NextResponse.json({ error: 'GPS location is required' }, { status: 400 });
   }
-  if (!token) return NextResponse.json({ error: 'QR token required' }, { status: 400 });
-
-  const parsed = verifyQrToken(token);
-  if (!parsed.ok || !parsed.sessionId || !parsed.projectId) {
-    return NextResponse.json({ error: parsed.reason || 'Invalid QR' }, { status: 400 });
-  }
-
-  const qrSession = await prisma.qrSession.findUnique({ where: { id: parsed.sessionId } });
-  if (!qrSession || qrSession.revokedAt || qrSession.expiresAt.getTime() < Date.now()) {
-    return NextResponse.json({ error: 'Expired or invalid QR' }, { status: 400 });
-  }
-  if (qrSession.tokenHash !== hashToken(token)) {
-    return NextResponse.json({ error: 'QR mismatch' }, { status: 400 });
-  }
+  const qr = await validatePunchQr(token, (id) => prisma.qrSession.findUnique({ where: { id } }));
+  if (!qr.ok) return NextResponse.json({ error: qr.error, code: qr.code }, { status: 400 });
+  const qrSession = qr.session;
 
   const openRecords = await prisma.attendanceRecord.findMany({
     where: {
@@ -64,7 +54,7 @@ export async function POST(req: NextRequest) {
   }
   const open = target.record;
 
-  if (open.projectId !== parsed.projectId) {
+  if (open.projectId !== qr.projectId) {
     return NextResponse.json(
       { error: 'QR project does not match your open shift project' },
       { status: 403 }

@@ -5,7 +5,8 @@ import { isInsideRadius } from '@/lib/geo';
 import { calculateAttendance } from '@/lib/attendance-calc';
 import { getTonightAssignment } from '@/lib/schedule';
 import { getShiftTiming } from '@/lib/schedule-timing';
-import { fingerprintFromRequest, hashToken, verifyQrToken } from '@/lib/security';
+import { fingerprintFromRequest } from '@/lib/security';
+import { validatePunchQr } from '@/lib/qr-validation';
 import { observePunchDevice, recordDeviceWarnings } from '@/lib/device-security';
 import { AttendanceMethod } from '@prisma/client';
 import { withShiftCheckoutWindow } from '@/lib/open-attendance';
@@ -23,25 +24,10 @@ async function validateQrAndLocation(body: Body, req: NextRequest) {
   if (body.latitude == null || body.longitude == null) {
     return { error: 'GPS location is required', status: 400 as const };
   }
-  if (!body.token) return { error: 'QR token required', status: 400 as const };
+  const qr = await validatePunchQr(body.token, (id) => prisma.qrSession.findUnique({ where: { id } }));
+  if (!qr.ok) return { error: qr.error, code: qr.code, status: 400 as const };
 
-  const parsed = verifyQrToken(body.token);
-  if (!parsed.ok || !parsed.sessionId || !parsed.projectId) {
-    return { error: parsed.reason || 'Invalid QR', status: 400 as const };
-  }
-
-  const session = await prisma.qrSession.findUnique({ where: { id: parsed.sessionId } });
-  if (!session || session.revokedAt) {
-    return { error: 'QR session invalid', status: 400 as const };
-  }
-  if (session.expiresAt.getTime() < Date.now()) {
-    return { error: 'Expired QR', status: 400 as const };
-  }
-  if (session.tokenHash !== hashToken(body.token)) {
-    return { error: 'QR mismatch', status: 400 as const };
-  }
-
-  const project = await prisma.project.findUnique({ where: { id: parsed.projectId } });
+  const project = await prisma.project.findUnique({ where: { id: qr.projectId } });
   if (!project || !project.isActive) {
     return { error: 'Project inactive', status: 400 as const };
   }
@@ -63,7 +49,7 @@ async function validateQrAndLocation(body: Body, req: NextRequest) {
 
   return {
     project,
-    qrSession: session,
+    qrSession: qr.session,
     ip: req.headers.get('x-forwarded-for'),
     ua: req.headers.get('user-agent'),
     fingerprint: fingerprintFromRequest(req.headers.get('user-agent'), body.deviceId),
@@ -80,7 +66,8 @@ export async function POST(req: NextRequest) {
   const validated = await validateQrAndLocation(body, req);
   if ('error' in validated && validated.error) {
     return NextResponse.json(
-      { error: validated.error, distance: 'distance' in validated ? validated.distance : undefined },
+      { error: validated.error, code: 'code' in validated ? validated.code : undefined,
+        distance: 'distance' in validated ? validated.distance : undefined },
       { status: validated.status }
     );
   }
